@@ -64,6 +64,7 @@ IS_PRODUCTION = ENVIRONMENT == "production"
 COOKIE_SECURE = IS_PRODUCTION or os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "none" if IS_PRODUCTION else "lax").lower()
 SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE_SECONDS", "5184000"))
+MESSAGE_READ_RETENTION = timedelta(hours=48)
 voice_storage = VoiceStorage()
 
 app = FastAPI(title="WorkForce API")
@@ -72,6 +73,30 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 _rate_buckets: dict[str, deque] = defaultdict(deque)
+_voice_expiration_task = None
+
+
+def parse_utc_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def message_expiry_from_read_at(read_at: Any) -> Optional[datetime]:
+    parsed = parse_utc_datetime(read_at)
+    return parsed + MESSAGE_READ_RETENTION if parsed else None
+
+
+def visible_message_filter(now: Optional[datetime] = None) -> dict:
+    cutoff = now or datetime.now(timezone.utc)
+    return {"$or": [{"expires_at": {"$exists": False}}, {"expires_at": {"$gt": cutoff}}]}
 
 
 def validate_environment() -> None:
@@ -94,10 +119,10 @@ def validate_environment() -> None:
         raise RuntimeError("JWT_SECRET must be at least 32 characters in production")
 
 
-def set_session_cookie(response: Response, name: str, value: str) -> str:
+def set_session_cookie(response: Response, name: str, value: str, csrf_token: Optional[str] = None) -> str:
     response.set_cookie(name, value, httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE,
                         max_age=SESSION_MAX_AGE, path="/")
-    csrf = secrets.token_urlsafe(24)
+    csrf = csrf_token or secrets.token_urlsafe(24)
     response.set_cookie("csrf_token", csrf, httponly=False, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE,
                         max_age=SESSION_MAX_AGE, path="/")
     return csrf
@@ -769,7 +794,12 @@ async def worker_login(body: WorkerLogin, response: Response, request: Request):
 async def worker_me(request: Request, response: Response, worker: dict = Depends(get_current_worker)):
     biz_id = worker.get("business_id")
     business = await db.businesses.find_one({"id": biz_id}, {"_id": 0}) if biz_id else None
-    csrf_token = set_session_cookie(response, "session_token", request.cookies.get("session_token", ""))
+    csrf_token = set_session_cookie(
+        response,
+        "session_token",
+        request.cookies.get("session_token", ""),
+        request.cookies.get("csrf_token"),
+    )
     return {
         "user": {"user_id": worker["id"], "worker_id": worker["id"], "name": worker.get("name")},
         "worker": worker,
@@ -1376,14 +1406,20 @@ async def deliver_chat_push(*, business_id: str, worker_id: str, sender_type: st
         if not worker or worker.get("status", "ACTIVE") == "INACTIVE":
             return
         query = {"business_id": business_id, "recipient_type": "worker", "recipient_id": worker_id}
+        unread_query = {"business_id": business_id, "worker_id": worker_id, "sender_type": "owner", "read_at": None}
         url = f"/worker?conversation={conversation_id}"
         title = "WorkForce: नया संदेश / New message"
     else:
         query = {"business_id": business_id, "recipient_type": "admin"}
+        unread_query = {"business_id": business_id, "sender_type": "worker", "read_at": None}
         url = f"/admin?conversation={conversation_id}"
         title = "WorkForce: Worker message"
     subscriptions = await db.push_subscriptions.find(query, {"_id": 0}).to_list(100)
-    payload = {"title": title, "body": preview[:160], "url": url, "conversation_id": conversation_id}
+    unread_count = await db.messages.count_documents(unread_query)
+    payload = {
+        "title": title, "body": preview[:160], "url": url,
+        "conversation_id": conversation_id, "unread_count": unread_count,
+    }
     for subscription in subscriptions:
         await push.send(subscription, payload)
 
@@ -1467,10 +1503,8 @@ async def get_worker_conversation(user: dict = Depends(get_current_worker)):
     }
 
 
-@api_router.get("/chat/conversations/{conversation_id}/messages")
-async def get_messages(conversation_id: str, request: Request, limit: int = 50, before: Optional[str] = None):
-    """Loads message history and marks opposite messages as read."""
-    # Check if admin or worker is calling
+async def resolve_conversation_actor(conversation_id: str, request: Request):
+    """Resolve and tenant-check the current chat actor and conversation."""
     is_admin = False
     is_worker = False
     auth_user = None
@@ -1496,20 +1530,157 @@ async def get_messages(conversation_id: str, request: Request, limit: int = 50, 
         if conv.get("worker_id") != auth_user["worker_id"] or conv.get("business_id") != auth_user["business_id"]:
             raise HTTPException(status_code=403, detail="Unauthorized")
 
-    # Mark unread messages as read
-    now_iso = datetime.now(timezone.utc).isoformat()
-    if is_admin:
-        await db.messages.update_many(
-            {"conversation_id": conversation_id, "sender_type": "worker", "read_at": None},
-            {"$set": {"read_at": now_iso}}
-        )
-    elif is_worker:
-        await db.messages.update_many(
-            {"conversation_id": conversation_id, "sender_type": "owner", "read_at": None},
-            {"$set": {"read_at": now_iso}}
+    return is_admin, is_worker, auth_user, conv
+
+
+async def persist_conversation_read(conversation_id: str, is_admin: bool, conv: dict):
+    """Persist incoming-message read state and return authoritative unread totals."""
+    incoming_sender = "worker" if is_admin else "owner"
+    unread_query = {
+        "conversation_id": conversation_id,
+        "business_id": conv["business_id"],
+        "worker_id": conv["worker_id"],
+        "sender_type": incoming_sender,
+        "read_at": None,
+    }
+    first_unread = await db.messages.find_one(
+        unread_query,
+        {"_id": 0, "id": 1},
+        sort=[("created_at", ASCENDING)],
+    )
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    expires_at = now_dt + MESSAGE_READ_RETENTION
+    audio_messages = await db.messages.find(
+        {**unread_query, "message_type": "audio", "audio_asset_id": {"$ne": None}},
+        {"_id": 0, "audio_asset_id": 1},
+    ).to_list(10000)
+    result = await db.messages.update_many(
+        unread_query,
+        {"$set": {"read_at": now_iso, "expires_at": expires_at}},
+    )
+    audio_asset_ids = [message["audio_asset_id"] for message in audio_messages if message.get("audio_asset_id")]
+    if audio_asset_ids:
+        await db.voice_assets.update_many(
+            {
+                "id": {"$in": audio_asset_ids},
+                "business_id": conv["business_id"],
+                "conversation_id": conversation_id,
+            },
+            {"$set": {"expires_at": expires_at}},
         )
 
-    q = {"conversation_id": conversation_id, "business_id": conv["business_id"], "worker_id": conv["worker_id"]}
+    total_query = {
+        "business_id": conv["business_id"],
+        "sender_type": incoming_sender,
+        "read_at": None,
+    }
+    if not is_admin:
+        total_query["worker_id"] = conv["worker_id"]
+
+    unread_count = await db.messages.count_documents(unread_query)
+    total_unread_count = await db.messages.count_documents(total_query)
+    return {
+        "conversation_id": conversation_id,
+        "marked_read": result.modified_count,
+        "read_at": now_iso,
+        "first_unread_message_id": first_unread.get("id") if first_unread else None,
+        "unread_count": unread_count,
+        "total_unread_count": total_unread_count,
+    }
+
+
+async def migrate_message_expirations() -> int:
+    """Backfill expiry for old read messages and remove expiry from unread ones."""
+    await db.messages.update_many(
+        {
+            "$and": [
+                {"$or": [{"read_at": None}, {"read_at": ""}, {"read_at": {"$exists": False}}]},
+                {"expires_at": {"$exists": True}},
+            ]
+        },
+        {"$unset": {"expires_at": ""}},
+    )
+    migrated = 0
+    cursor = db.messages.find(
+        {"read_at": {"$nin": [None, ""]}, "expires_at": {"$exists": False}},
+        {"_id": 1, "id": 1, "business_id": 1, "conversation_id": 1, "audio_asset_id": 1, "read_at": 1},
+    )
+    async for message in cursor:
+        expires_at = message_expiry_from_read_at(message.get("read_at"))
+        if not expires_at:
+            logger.warning("Skipping message with invalid read_at during expiry migration id=%s", message.get("id"))
+            continue
+        selector = {"_id": message["_id"]} if message.get("_id") is not None else {
+            "id": message.get("id"),
+            "business_id": message.get("business_id"),
+            "conversation_id": message.get("conversation_id"),
+        }
+        result = await db.messages.update_one(
+            {**selector, "read_at": {"$nin": [None, ""]}, "expires_at": {"$exists": False}},
+            {"$set": {"expires_at": expires_at}},
+        )
+        migrated += result.modified_count
+        if result.modified_count and message.get("audio_asset_id"):
+            await db.voice_assets.update_one(
+                {
+                    "id": message["audio_asset_id"],
+                    "business_id": message.get("business_id"),
+                    "conversation_id": message.get("conversation_id"),
+                },
+                {"$set": {"expires_at": expires_at}},
+            )
+    return migrated
+
+
+async def cleanup_expired_voice_assets() -> int:
+    """Delete expired private voice binaries and their scoped metadata."""
+    removed = 0
+    cursor = db.voice_assets.find(
+        {"expires_at": {"$lte": datetime.now(timezone.utc)}},
+        {"_id": 0},
+    )
+    async for asset in cursor:
+        try:
+            await voice_storage.delete_voice_message(asset)
+            result = await db.voice_assets.delete_one({
+                "id": asset.get("id"),
+                "business_id": asset.get("business_id"),
+                "conversation_id": asset.get("conversation_id"),
+                "expires_at": asset.get("expires_at"),
+            })
+            removed += result.deleted_count
+        except Exception:
+            logger.exception("Expired voice asset cleanup failed id=%s", asset.get("id"))
+    return removed
+
+
+async def voice_expiration_loop() -> None:
+    while True:
+        await asyncio.sleep(30)
+        await cleanup_expired_voice_assets()
+
+
+@api_router.post("/chat/conversations/{conversation_id}/read")
+async def mark_conversation_read(conversation_id: str, request: Request):
+    """Mark only incoming messages read and return persisted backend unread totals."""
+    is_admin, _, _, conv = await resolve_conversation_actor(conversation_id, request)
+    return await persist_conversation_read(conversation_id, is_admin, conv)
+
+
+@api_router.get("/chat/conversations/{conversation_id}/messages")
+async def get_messages(conversation_id: str, request: Request, limit: int = 50, before: Optional[str] = None):
+    """Loads message history; legacy callers also mark incoming messages as read."""
+    is_admin, _, _, conv = await resolve_conversation_actor(conversation_id, request)
+
+    await persist_conversation_read(conversation_id, is_admin, conv)
+
+    q = {
+        "conversation_id": conversation_id,
+        "business_id": conv["business_id"],
+        "worker_id": conv["worker_id"],
+        **visible_message_filter(),
+    }
     if before:
         q["created_at"] = {"$lt": before}
     messages = await db.messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(min(max(limit, 1), 100))
@@ -1684,7 +1855,10 @@ async def get_audio_file(message_id: str, request: Request):
             actor, is_admin = await get_current_worker(request), False
         except Exception:
             raise HTTPException(status_code=401, detail="Not authenticated")
-    message = await db.messages.find_one({"id": message_id, "message_type": "audio"}, {"_id": 0})
+    message = await db.messages.find_one(
+        {"id": message_id, "message_type": "audio", **visible_message_filter()},
+        {"_id": 0},
+    )
     if not message or (is_admin and message.get("business_id") != actor["business_id"]) or (
         not is_admin and (message.get("business_id") != actor["business_id"] or message.get("worker_id") != actor["worker_id"])
     ):
@@ -1774,6 +1948,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
+    global _voice_expiration_task
     validate_environment()
     logger.info("Initializing database indexes and migrations...")
     try:
@@ -1781,6 +1956,22 @@ async def startup():
     except Exception as exc:
         logger.error("MongoDB is unavailable; backend startup aborted")
         raise RuntimeError("MongoDB is unavailable. Check MONGO_URL and database network access.") from exc
+
+    # Backfill only chat-message expiry state before enabling TTL. Unread messages
+    # have any accidental expiry removed and can therefore never be TTL-deleted.
+    migrated_messages = await migrate_message_expirations()
+    removed_voice_assets = await cleanup_expired_voice_assets()
+    if migrated_messages or removed_voice_assets:
+        logger.info(
+            "Message expiration migration completed migrated=%d voice_assets_removed=%d",
+            migrated_messages,
+            removed_voice_assets,
+        )
+
+    # These indexes are required for the retention guarantee. Fail startup rather
+    # than silently run without expiry or with an unindexed cleanup scan.
+    await db.messages.create_index("expires_at", expireAfterSeconds=0, name="messages_expires_at_ttl")
+    await db.voice_assets.create_index("expires_at", name="voice_assets_expiration_cleanup")
     
     # 1. Ensure safe MongoDB indexes
     try:
@@ -1858,7 +2049,15 @@ async def startup():
     except Exception as e:
         logger.warning(f"Backfill migration notice: {e}")
 
+    _voice_expiration_task = asyncio.create_task(voice_expiration_loop())
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    if _voice_expiration_task:
+        _voice_expiration_task.cancel()
+        try:
+            await _voice_expiration_task
+        except asyncio.CancelledError:
+            pass
     client.close()

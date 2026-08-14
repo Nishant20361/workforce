@@ -11,7 +11,7 @@ import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
 import UnreadBadge from "@/components/chat/UnreadBadge";
 import useSmartChatScroll from "@/components/chat/useSmartChatScroll";
-import { enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
+import { clearConversationNotifications, enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
 import {
   Loader2,
   LogOut,
@@ -58,6 +58,7 @@ export default function WorkerDashboard() {
   // Chat State
   const [chatConv, setChatConv] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [firstUnreadId, setFirstUnreadId] = useState(null);
   const [msgText, setMsgText] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
@@ -83,14 +84,15 @@ export default function WorkerDashboard() {
       if (requestId !== chatRequestRef.current) return;
       // Reading the thread is the deliberate action that clears read_at/unread count.
       if (tab === "messages") {
+        const { data: readState } = await workerApi.post(`/chat/conversations/${conv.conversation_id}/read`);
+        if (requestId !== chatRequestRef.current) return;
+        setChatConv({ ...conv, unread_count: readState.unread_count });
+        setFirstUnreadId((current) => current || readState.first_unread_message_id);
+        updateAppBadge(readState.total_unread_count);
+        clearConversationNotifications(conv.conversation_id, readState.total_unread_count);
         const { data: msgs } = await workerApi.get(`/chat/conversations/${conv.conversation_id}/messages`);
         if (requestId !== chatRequestRef.current) return;
-        // Re-fetch after the backend read update. This response, not local state, owns the badge.
-        const { data: refreshedConv } = await workerApi.get("/chat/worker-conversation");
-        if (requestId !== chatRequestRef.current) return;
         setMessages(msgs);
-        setChatConv(refreshedConv);
-        updateAppBadge(refreshedConv.unread_count);
       } else {
         setChatConv(conv);
         updateAppBadge(conv.unread_count);
@@ -529,31 +531,27 @@ export default function WorkerDashboard() {
                     const isWorker = m.sender_type === "worker";
                     const showSender = index === 0 || messages[index - 1].sender_type !== m.sender_type;
                     return (
-                      <div
-                        key={m.id}
-                        className={`flex flex-col ${isWorker ? "items-end" : "items-start"}`}
-                      >
-                        {showSender && <span className="text-[10px] text-slate-400 mb-1 px-1">
-                          {isWorker ? "आप (You)" : "मालिक (Owner)"}
-                        </span>}
+                      <div key={m.id}>
+                        {m.id === firstUnreadId && <div className="chat-new-divider" role="separator"><span>New Messages</span></div>}
+                        <div className={`flex flex-col ${isWorker ? "items-end" : "items-start"}`}>
+                          {showSender && <span className="text-[10px] text-slate-400 mb-1 px-1">
+                            {isWorker ? "आप (You)" : "मालिक (Owner)"}
+                          </span>}
 
-                        {m.message_type === "audio" ? (
-                          <AudioPlayer audioUrl={m.audio_url} duration={m.duration} />
-                        ) : (
-                          <div
-                            className={`chat-bubble rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
-                              isWorker
-                                ? "bg-teal-800 text-white rounded-br-none"
-                                : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
-                            }`}
-                          >
-                            {m.text}
-                          </div>
-                        )}
-                        <span className="min-h-[14px] text-[10px] leading-[14px] text-slate-400 mt-0.5 px-1 tabular-nums">
-                          {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}
-                          {isWorker ? ` · ${m.read_at ? "Seen" : "Sent"}` : ""}
-                        </span>
+                          {m.message_type === "audio" ? (
+                            <AudioPlayer audioUrl={m.audio_url} duration={m.duration} />
+                          ) : (
+                            <div className={`chat-bubble rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
+                                isWorker ? "bg-teal-800 text-white rounded-br-none" : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
+                              }`}>
+                              {m.text}
+                            </div>
+                          )}
+                          <span className="min-h-[14px] text-[10px] leading-[14px] text-slate-400 mt-0.5 px-1 tabular-nums">
+                            {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}
+                            {isWorker ? ` · ${m.read_at ? "Seen" : "Sent"}` : ""}
+                          </span>
+                        </div>
                       </div>
                     );
                   })}

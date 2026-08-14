@@ -1,4 +1,4 @@
-import { adminApi, workerApi } from "@/lib/api";
+import { adminApi, workerApi } from "./api";
 
 const publicKey = process.env.REACT_APP_VAPID_PUBLIC_KEY;
 
@@ -26,4 +26,22 @@ export function updateAppBadge(count) {
   const unread = Math.max(0, Number(count) || 0);
   if (unread > 0 && typeof navigator.setAppBadge === "function") navigator.setAppBadge(unread).catch(() => {});
   if (unread === 0 && typeof navigator.clearAppBadge === "function") navigator.clearAppBadge().catch(() => {});
+}
+
+export async function clearConversationNotifications(conversationId, totalUnreadCount = 0) {
+  if (!conversationId || !("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (!registration) return;
+    const message = { type: "CONVERSATION_READ", conversationId, totalUnreadCount };
+    registration.active?.postMessage(message);
+    registration.waiting?.postMessage(message);
+    registration.installing?.postMessage(message);
+    if (typeof registration.getNotifications === "function") {
+      const notifications = await registration.getNotifications({ tag: conversationId });
+      notifications.forEach((notification) => notification.close());
+    }
+  } catch (_) {
+    // Notification cleanup is best-effort and must never interrupt chat reads.
+  }
 }

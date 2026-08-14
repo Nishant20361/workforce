@@ -17,7 +17,7 @@ import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
 import UnreadBadge from "@/components/chat/UnreadBadge";
 import useSmartChatScroll from "@/components/chat/useSmartChatScroll";
-import { enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
+import { clearConversationNotifications, enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
 import {
   HardHat, LayoutDashboard, Users, CalendarCheck, Wallet, Sparkles, LogOut,
   Plus, Pencil, Trash2, Loader2, Menu, X, Search, ArrowUpRight, UserPlus,
@@ -65,8 +65,13 @@ export default function AdminDashboard() {
     }
   }, []);
 
-  const loadUnreadMessages = useCallback(async () => {
+  const loadUnreadMessages = useCallback(async (authoritativeCount) => {
     const requestId = ++unreadRequestRef.current;
+    if (Number.isFinite(authoritativeCount)) {
+      setUnreadMessages(authoritativeCount);
+      updateAppBadge(authoritativeCount);
+      return;
+    }
     try {
       const { data } = await adminApi.get("/chat/conversations");
       if (requestId !== unreadRequestRef.current) return;
@@ -1537,6 +1542,7 @@ function MessagesSection({ workers, onUnreadChange }) {
   const [conversations, setConversations] = useState([]);
   const [activeConv, setActiveConv] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [firstUnreadId, setFirstUnreadId] = useState(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
@@ -1566,11 +1572,15 @@ function MessagesSection({ workers, onUnreadChange }) {
     const conversationId = activeConv.conversation_id;
     const requestId = ++messagesRequestRef.current;
     try {
+      const { data: readState } = await adminApi.post(`/chat/conversations/${conversationId}/read`);
+      if (requestId !== messagesRequestRef.current || conversationId !== activeConv.conversation_id) return;
+      setFirstUnreadId((current) => current || readState.first_unread_message_id);
+      setConversations((items) => items.map((item) => item.conversation_id === conversationId ? { ...item, unread_count: readState.unread_count } : item));
+      onUnreadChange?.(readState.total_unread_count);
+      clearConversationNotifications(conversationId, readState.total_unread_count);
       const res = await adminApi.get(`/chat/conversations/${conversationId}/messages`);
       if (requestId !== messagesRequestRef.current || conversationId !== activeConv.conversation_id) return;
       setMessages(res.data);
-      // Give immediate feedback, then replace it with the backend-authoritative list/count.
-      setConversations((items) => items.map((item) => item.conversation_id === conversationId ? { ...item, unread_count: 0 } : item));
       await loadConversations();
     } catch (e) {
       console.error(e);
@@ -1582,6 +1592,8 @@ function MessagesSection({ workers, onUnreadChange }) {
   }, [loadConversations]);
 
   useEffect(() => {
+    setFirstUnreadId(null);
+    setMessages([]);
     loadMessages();
     const interval = setInterval(loadMessages, 3500); // Polling for new chat messages
     return () => clearInterval(interval);
@@ -1721,31 +1733,27 @@ function MessagesSection({ workers, onUnreadChange }) {
                 const isOwner = m.sender_type === "owner";
                 const showSender = index === 0 || messages[index - 1].sender_type !== m.sender_type;
                 return (
-                  <div
-                    key={m.id}
-                    className={`flex flex-col ${isOwner ? "items-end" : "items-start"}`}
-                  >
-                    {showSender && <span className="text-[10px] text-slate-400 mb-1 px-1">
-                      {isOwner ? "आप (Owner)" : activeConv.worker.name}
-                    </span>}
+                  <div key={m.id}>
+                    {m.id === firstUnreadId && <div className="chat-new-divider" role="separator"><span>New Messages</span></div>}
+                    <div className={`flex flex-col ${isOwner ? "items-end" : "items-start"}`}>
+                      {showSender && <span className="text-[10px] text-slate-400 mb-1 px-1">
+                        {isOwner ? "आप (Owner)" : activeConv.worker.name}
+                      </span>}
 
-                    {m.message_type === "audio" ? (
-                      <AudioPlayer audioUrl={m.audio_url} duration={m.duration} />
-                    ) : (
-                      <div
-                        className={`chat-bubble rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
-                          isOwner
-                            ? "bg-teal-800 text-white rounded-br-none"
-                            : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
-                        }`}
-                      >
-                        {m.text}
-                      </div>
-                    )}
-                    <span className="min-h-[14px] text-[10px] leading-[14px] text-slate-400 mt-0.5 px-1 tabular-nums">
-                      {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}
-                      {isOwner ? ` · ${m.read_at ? "Seen" : "Sent"}` : ""}
-                    </span>
+                      {m.message_type === "audio" ? (
+                        <AudioPlayer audioUrl={m.audio_url} duration={m.duration} />
+                      ) : (
+                        <div className={`chat-bubble rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
+                            isOwner ? "bg-teal-800 text-white rounded-br-none" : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
+                          }`}>
+                          {m.text}
+                        </div>
+                      )}
+                      <span className="min-h-[14px] text-[10px] leading-[14px] text-slate-400 mt-0.5 px-1 tabular-nums">
+                        {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}
+                        {isOwner ? ` · ${m.read_at ? "Seen" : "Sent"}` : ""}
+                      </span>
+                    </div>
                   </div>
                 );
               })}

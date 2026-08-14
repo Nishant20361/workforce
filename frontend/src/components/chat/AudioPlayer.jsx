@@ -78,7 +78,7 @@ export default function AudioPlayer({ audioUrl, duration }) {
   }
 
   return (
-    <div className="flex items-center gap-3 bg-white/90 border border-slate-200 rounded-2xl px-3 py-2 shadow-sm min-w-[200px] max-w-[300px]">
+    <div className="flex items-center gap-3 bg-white/90 border border-slate-200 rounded-2xl px-3 py-2 shadow-sm w-[min(78vw,300px)] min-w-0">
       <audio ref={audioRef} src={src} preload="metadata" crossOrigin="use-credentials" />
       <button
         type="button"
