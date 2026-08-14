@@ -63,7 +63,7 @@ ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
 IS_PRODUCTION = ENVIRONMENT == "production"
 COOKIE_SECURE = IS_PRODUCTION or os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "none" if IS_PRODUCTION else "lax").lower()
-SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE_SECONDS", "28800"))
+SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE_SECONDS", "5184000"))
 voice_storage = VoiceStorage()
 
 app = FastAPI(title="WorkForce API")
@@ -124,12 +124,14 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(admin_id: str, email: str, business_id: str) -> str:
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": admin_id,
         "email": email,
         "business_id": business_id,
         "type": "access",
-        "exp": datetime.now(timezone.utc) + timedelta(days=7),
+        "iat": now,
+        "exp": now + timedelta(seconds=SESSION_MAX_AGE),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -165,12 +167,23 @@ async def get_current_admin(request: Request) -> dict:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid session")
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        if await db.revoked_admin_tokens.find_one({"token_hash": token_hash}):
+            raise HTTPException(status_code=401, detail="Session expired")
         admin = await db.admins.find_one(
             {"id": payload["sub"], "is_active": {"$ne": False}, "disabled_at": {"$in": [None, ""]}},
             {"_id": 0, "password_hash": 0}
         )
         if not admin:
             raise HTTPException(status_code=401, detail="Admin not found or deactivated")
+        changed_at = admin.get("password_changed_at")
+        issued_at = payload.get("iat")
+        if changed_at and issued_at:
+            changed = datetime.fromisoformat(changed_at) if isinstance(changed_at, str) else changed_at
+            if changed.tzinfo is None:
+                changed = changed.replace(tzinfo=timezone.utc)
+            if datetime.fromtimestamp(issued_at, timezone.utc) < changed:
+                raise HTTPException(status_code=401, detail="Session expired")
         
         # Verify and attach business ownership
         business = await get_or_create_business_for_admin(admin)
@@ -219,6 +232,13 @@ async def get_current_worker(request: Request) -> dict:
     if not worker.get("portal_enabled", False):
         await db.worker_sessions.delete_many({"worker_id": worker["id"]})
         raise HTTPException(status_code=403, detail="Portal access is disabled for this worker")
+
+    # A valid authenticated request renews the server-side session window.
+    await db.worker_sessions.update_one(
+        {"session_token": token},
+        {"$set": {"expires_at": (datetime.now(timezone.utc) + timedelta(seconds=SESSION_MAX_AGE)).isoformat(),
+                  "last_seen_at": datetime.now(timezone.utc).isoformat()}},
+    )
 
     worker["worker_id"] = worker["id"]
     worker["user_id"] = worker["id"]
@@ -290,6 +310,18 @@ class BusinessUpdate(BaseModel):
 class WorkerLogin(BaseModel):
     login_id: str = Field(min_length=2, max_length=50)
     password: str = Field(min_length=1, max_length=128)
+
+
+def normalize_indian_phone_identifier(identifier: str) -> Optional[str]:
+    """Return a valid ten-digit Indian mobile number, without touching Worker IDs."""
+    compact = re.sub(r"[\s-]+", "", identifier.strip())
+    if compact.startswith("+91"):
+        compact = compact[3:]
+    elif compact.startswith("91") and len(compact) == 12:
+        compact = compact[2:]
+    if re.fullmatch(r"[6-9]\d{9}", compact):
+        return compact
+    return None
 
 
 class WorkerChangePassword(BaseModel):
@@ -646,8 +678,10 @@ async def admin_reset_password(body: ResetPasswordRequest, request: Request):
 
 
 @api_router.get("/admin/me")
-async def admin_me(request: Request, admin: dict = Depends(get_current_admin)):
-    return {**admin, "csrf_token": request.cookies.get("csrf_token")}
+async def admin_me(request: Request, response: Response, admin: dict = Depends(get_current_admin)):
+    # Renew the secure cookie only after a valid authenticated request.
+    csrf_token = set_session_cookie(response, "access_token", create_access_token(admin["id"], admin["email"], admin["business_id"]))
+    return {**admin, "csrf_token": csrf_token}
 
 
 @api_router.put("/admin/business")
@@ -661,7 +695,14 @@ async def update_business(body: BusinessUpdate, admin: dict = Depends(get_curren
 
 
 @api_router.post("/admin/logout")
-async def admin_logout(response: Response):
+async def admin_logout(request: Request, response: Response):
+    token = request.cookies.get("access_token") or ""
+    if token:
+        await db.revoked_admin_tokens.update_one(
+            {"token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest()},
+            {"$set": {"token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(), "expires_at": datetime.now(timezone.utc) + timedelta(seconds=SESSION_MAX_AGE)}},
+            upsert=True,
+        )
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("csrf_token", path="/")
     return {"ok": True}
@@ -671,18 +712,26 @@ async def admin_logout(response: Response):
 @api_router.post("/worker/login")
 async def worker_login(body: WorkerLogin, response: Response, request: Request):
     rate_limit(request, "worker-login", 15, 60)
-    login_id = body.login_id.strip()
-
-    matches = await db.workers.find({
-        "login_id": {"$regex": f"^{re.escape(login_id)}$", "$options": "i"},
-        "archived_at": {"$in": [None, ""]},
-        "deleted_at": {"$in": [None, ""]},
-    }).to_list(2)
+    identifier = body.login_id.strip()
+    phone = normalize_indian_phone_identifier(identifier)
+    base_query = {"archived_at": {"$in": [None, ""]}, "deleted_at": {"$in": [None, ""]}}
+    if phone:
+        # Existing data may use several phone display formats. Normalize candidates in
+        # Python and refuse ambiguous matches instead of crossing tenant boundaries.
+        candidates = await db.workers.find(base_query).to_list(10000)
+        matches = [worker for worker in candidates if normalize_indian_phone_identifier(str(worker.get("mobile", ""))) == phone]
+        if len(matches) > 1:
+            raise HTTPException(status_code=401, detail="इस मोबाइल नंबर से एक से ज्यादा account जुड़े हैं। कृपया Worker ID से login करें।")
+    else:
+        matches = await db.workers.find({
+            **base_query,
+            "login_id": {"$regex": f"^{re.escape(identifier)}$", "$options": "i"},
+        }).to_list(2)
     worker = matches[0] if len(matches) == 1 else None
     if not worker or not worker.get("portal_enabled", False) or not worker.get("password_hash") or not verify_password(body.password, worker["password_hash"]):
         raise HTTPException(
             status_code=401,
-            detail="Invalid Worker ID or password / अमान्य आईडी या पासवर्ड"
+            detail="Invalid Worker ID / Phone Number or Password. वर्कर आईडी / मोबाइल नंबर या पासवर्ड गलत है।"
         )
 
     if worker.get("status", "ACTIVE") == "INACTIVE":
@@ -700,7 +749,7 @@ async def worker_login(body: WorkerLogin, response: Response, request: Request):
         "session_token": session_token,
         "worker_id": worker["id"],
         "business_id": biz_id,
-        "expires_at": (now_dt + timedelta(days=7)).isoformat(),
+        "expires_at": (now_dt + timedelta(seconds=SESSION_MAX_AGE)).isoformat(),
         "created_at": now_dt.isoformat(),
     })
 
@@ -717,14 +766,15 @@ async def worker_login(body: WorkerLogin, response: Response, request: Request):
 
 @api_router.get("/worker/auth/me")
 @api_router.get("/worker/me")
-async def worker_me(request: Request, worker: dict = Depends(get_current_worker)):
+async def worker_me(request: Request, response: Response, worker: dict = Depends(get_current_worker)):
     biz_id = worker.get("business_id")
     business = await db.businesses.find_one({"id": biz_id}, {"_id": 0}) if biz_id else None
+    csrf_token = set_session_cookie(response, "session_token", request.cookies.get("session_token", ""))
     return {
         "user": {"user_id": worker["id"], "worker_id": worker["id"], "name": worker.get("name")},
         "worker": worker,
         "business": business,
-        "csrf_token": request.cookies.get("csrf_token"),
+        "csrf_token": csrf_token,
     }
 
 
@@ -754,6 +804,7 @@ async def worker_change_password(body: WorkerChangePassword, worker: dict = Depe
         {"id": worker["id"]},
         {"$set": {"password_hash": hash_password(body.new_password), "updated_at": now_iso}}
     )
+    await db.worker_sessions.delete_many({"worker_id": worker["id"]})
     return {"message": "Password changed successfully / पासवर्ड सफलतापूर्वक बदल दिया गया"}
 
 
@@ -1755,6 +1806,8 @@ async def startup():
         await db.voice_assets.create_index([("business_id", ASCENDING), ("conversation_id", ASCENDING)])
         await db.push_subscriptions.create_index("endpoint", unique=True)
         await db.push_subscriptions.create_index([("business_id", ASCENDING), ("recipient_type", ASCENDING), ("recipient_id", ASCENDING)])
+        await db.revoked_admin_tokens.create_index("token_hash", unique=True)
+        await db.revoked_admin_tokens.create_index("expires_at", expireAfterSeconds=0)
         logger.info("Database indexes successfully verified.")
     except Exception as e:
         logger.warning(f"Index creation notice: {e}")

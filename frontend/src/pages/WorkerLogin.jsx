@@ -8,6 +8,7 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  X,
 } from "lucide-react";
 import { useWorkerAuth } from "@/context/WorkerAuth";
 import { apiError } from "@/lib/api";
@@ -20,7 +21,7 @@ export default function WorkerLogin() {
   const { worker, loading: authLoading, login } = useWorkerAuth();
   const [loading, setLoading] = useState(false);
 
-  const [loginId, setLoginId] = useState("");
+  const [loginId, setLoginId] = useState(() => localStorage.getItem("workforce_last_worker_identifier") || "");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
@@ -31,13 +32,15 @@ export default function WorkerLogin() {
   const handleLogin = async (e) => {
     e.preventDefault();
     if (!loginId.trim() || !password) {
-      toast.error("Please enter your Worker ID and password / Worker ID और पासवर्ड दर्ज करें");
+      toast.error("Please enter your Worker ID or Phone Number and password / Worker ID या मोबाइल नंबर और पासवर्ड दर्ज करें");
       return;
     }
 
     setLoading(true);
     try {
       await login(loginId.trim(), password);
+      localStorage.setItem("workforce_last_worker_identifier", loginId.trim());
+      setPassword("");
       toast.success("Signed in / सफलतापूर्वक लॉगिन हुआ");
       navigate("/worker");
     } catch (error) {
@@ -79,17 +82,17 @@ export default function WorkerLogin() {
           </div>
 
           <p className="text-sm text-slate-500 mb-7 leading-relaxed">
-            अपना Worker ID और पासवर्ड डालें जो आपके मालिक ने दिया है।
+            अपना Worker ID या मोबाइल नंबर और पासवर्ड डालें जो आपके मालिक ने दिया है।
             <br />
             <span className="text-[12px] text-slate-400">
-              Enter the Worker ID and password provided by your employer.
+              Enter the Worker ID or phone number and password provided by your employer.
             </span>
           </p>
 
           <form onSubmit={handleLogin} className="space-y-5" data-testid="worker-login-form">
             <div>
               <Label className="text-xs font-bold text-slate-700">
-                Worker ID / वर्कर आईडी
+                Worker ID or Phone Number / वर्कर आईडी या मोबाइल नंबर
               </Label>
               <div className="relative mt-1.5">
                 <KeyRound className="absolute left-3.5 top-3 h-4 w-4 text-slate-400" />
@@ -97,12 +100,13 @@ export default function WorkerLogin() {
                   data-testid="worker-loginid-input"
                   type="text"
                   required
-                  placeholder="e.g. WF-123456"
+                  placeholder="e.g. WF-123456 or 9876543210"
                   value={loginId}
                   onChange={(e) => setLoginId(e.target.value)}
                   className="pl-10 h-11 rounded-xl text-sm font-mono tracking-wide"
                   autoComplete="username"
                 />
+                {loginId && <button type="button" aria-label="Clear remembered identifier" onClick={() => { setLoginId(""); localStorage.removeItem("workforce_last_worker_identifier"); }} className="absolute right-2 top-2 p-1 text-slate-400 hover:text-slate-700"><X className="h-4 w-4" /></button>}
               </div>
             </div>
 

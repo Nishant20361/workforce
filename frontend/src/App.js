@@ -9,6 +9,7 @@ import AdminDashboard from "@/pages/AdminDashboard";
 import WorkerLogin from "@/pages/WorkerLogin";
 import WorkerDashboard from "@/pages/WorkerDashboard";
 import ResetPassword from "@/pages/ResetPassword";
+import InstallWorkforceApp from "@/components/InstallWorkforceApp";
 
 function AppRoutes() {
   return (
@@ -31,6 +32,7 @@ function App() {
           <WorkerAuthProvider>
             <AppRoutes />
             <Toaster position="top-right" richColors />
+            <InstallWorkforceApp />
           </WorkerAuthProvider>
         </AdminAuthProvider>
       </BrowserRouter>
