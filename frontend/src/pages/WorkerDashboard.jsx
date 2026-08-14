@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import AudioPlayer from "@/components/chat/AudioPlayer";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
+import { enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
 import {
   Loader2,
   LogOut,
@@ -50,7 +51,7 @@ export default function WorkerDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState("home"); // home, attendance, money, messages
+  const [tab, setTab] = useState(() => new URLSearchParams(window.location.search).has("conversation") ? "messages" : "home"); // home, attendance, money, messages
 
   // Chat State
   const [chatConv, setChatConv] = useState(null);
@@ -58,6 +59,7 @@ export default function WorkerDashboard() {
   const [msgText, setMsgText] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
+  const [enablingNotifications, setEnablingNotifications] = useState(false);
   const messagesEndRef = useRef(null);
 
   const loadData = useCallback(async () => {
@@ -75,12 +77,20 @@ export default function WorkerDashboard() {
     try {
       const { data: conv } = await workerApi.get("/chat/worker-conversation");
       setChatConv(conv);
-      const { data: msgs } = await workerApi.get(`/chat/conversations/${conv.conversation_id}/messages`);
-      setMessages(msgs);
+      updateAppBadge(conv.unread_count || 0);
+      // Reading the thread is the deliberate action that clears read_at/unread count.
+      if (tab === "messages") {
+        const { data: msgs } = await workerApi.get(`/chat/conversations/${conv.conversation_id}/messages`);
+        setMessages(msgs);
+        if (conv.unread_count) {
+          setChatConv((current) => current ? { ...current, unread_count: 0 } : current);
+          updateAppBadge(0);
+        }
+      }
     } catch (e) {
       console.error(e);
     }
-  }, []);
+  }, [tab]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -104,6 +114,18 @@ export default function WorkerDashboard() {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, tab]);
+
+  const enableNotifications = async () => {
+    setEnablingNotifications(true);
+    try {
+      await enablePushNotifications(false);
+      toast.success("Notifications enabled / नोटिफिकेशन चालू हैं");
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setEnablingNotifications(false);
+    }
+  };
 
   const handleSendText = async (e) => {
     e?.preventDefault();
@@ -216,6 +238,7 @@ export default function WorkerDashboard() {
             >
               <t.icon className="h-4 w-4" />
               <span>{t.label}</span>
+              {t.key === "messages" && chatConv?.unread_count > 0 && <span className="min-w-5 h-5 px-1 rounded-full bg-rose-500 text-white text-[10px] flex items-center justify-center">{chatConv.unread_count}</span>}
             </button>
           ))}
         </div>
@@ -467,7 +490,7 @@ export default function WorkerDashboard() {
             {tab === "messages" && (
               <div className="bg-white border border-stone-200 rounded-3xl shadow-md overflow-hidden flex flex-col h-[70vh] min-h-[480px]">
                 {/* Chat Header */}
-                <div className="p-4 border-b border-stone-200 bg-[#102f2c] text-white flex items-center justify-between">
+                    <div className="p-4 border-b border-stone-200 bg-[#102f2c] text-white flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="h-9 w-9 rounded-xl bg-amber-400 text-slate-950 flex items-center justify-center font-bold">
                       <HardHat className="h-5 w-5" />
@@ -481,6 +504,9 @@ export default function WorkerDashboard() {
                       </p>
                     </div>
                   </div>
+                  {pushSupported() && <Button type="button" variant="outline" size="sm" onClick={enableNotifications} disabled={enablingNotifications} className="rounded-xl text-xs bg-white text-teal-900">
+                    {enablingNotifications ? "Enabling…" : "Enable Notifications / नोटिफिकेशन चालू करें"}
+                  </Button>}
                 </div>
 
                 {/* Message Log */}
@@ -550,6 +576,7 @@ export default function WorkerDashboard() {
                       <SpeechTyping
                         currentText={msgText}
                         onSpeechResult={(transcript) => setMsgText(transcript)}
+                        disabled={showRecorder}
                       />
 
                       {/* Text Input */}

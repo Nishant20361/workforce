@@ -1,0 +1,9 @@
+{
+  "short_name": "WorkForce",
+  "name": "WorkForce Management",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#102f2c",
+  "theme_color": "#102f2c",
+  "icons": []
+}

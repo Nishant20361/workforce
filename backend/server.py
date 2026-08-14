@@ -23,6 +23,7 @@ import time
 import secrets
 import hashlib
 import re
+import asyncio
 from collections import defaultdict, deque
 from urllib.parse import urlparse
 
@@ -37,6 +38,7 @@ from backend.services.timezone import (
 from backend.services.payroll import PayrollService
 from backend.services.storage import VoiceStorage
 from backend.services.email import email_service
+from backend.services import push
 
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL')
@@ -461,6 +463,18 @@ class MessageCreate(BaseModel):
     text: Optional[str] = Field("", max_length=4000)
     audio_asset_id: Optional[str] = None
     duration: Optional[float] = 0.0
+
+
+class PushSubscriptionCreate(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=2048)
+    keys: Dict[str, str]
+
+    @field_validator("keys")
+    @classmethod
+    def valid_keys(cls, value: Dict[str, str]) -> Dict[str, str]:
+        if not value.get("p256dh") or not value.get("auth"):
+            raise ValueError("Push subscription keys are incomplete")
+        return value
 
 
 def generate_unique_worker_id() -> str:
@@ -1271,6 +1285,58 @@ async def worker_self_data(user: dict = Depends(get_current_worker)):
 
 
 # ---------------- Owner ↔ Worker Chat Endpoints ----------------
+@api_router.get("/push/public-key")
+async def push_public_key():
+    """Exposes only the VAPID public key; the private key never leaves the server."""
+    return {"public_key": push.public_key()}
+
+
+@api_router.post("/push/subscribe")
+async def subscribe_to_push(body: PushSubscriptionCreate, request: Request):
+    """Store a subscription for the authenticated principal only."""
+    try:
+        actor = await get_current_admin(request)
+        recipient_type, recipient_id = "admin", actor["id"]
+    except Exception:
+        try:
+            actor = await get_current_worker(request)
+            recipient_type, recipient_id = "worker", actor["worker_id"]
+        except Exception:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+    await db.push_subscriptions.update_one(
+        {"endpoint": body.endpoint},
+        {"$set": {
+            "endpoint": body.endpoint, "keys": body.keys, "business_id": actor["business_id"],
+            "recipient_type": recipient_type, "recipient_id": recipient_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+async def deliver_chat_push(*, business_id: str, worker_id: str, sender_type: str,
+                            conversation_id: str, preview: str) -> None:
+    """Deliver best-effort push only to the server-selected other participant."""
+    if not push.configured():
+        return
+    if sender_type == "owner":
+        worker = await db.workers.find_one({"id": worker_id, "business_id": business_id}, {"_id": 0, "status": 1})
+        if not worker or worker.get("status", "ACTIVE") == "INACTIVE":
+            return
+        query = {"business_id": business_id, "recipient_type": "worker", "recipient_id": worker_id}
+        url = f"/worker?conversation={conversation_id}"
+        title = "WorkForce: नया संदेश / New message"
+    else:
+        query = {"business_id": business_id, "recipient_type": "admin"}
+        url = f"/admin?conversation={conversation_id}"
+        title = "WorkForce: Worker message"
+    subscriptions = await db.push_subscriptions.find(query, {"_id": 0}).to_list(100)
+    payload = {"title": title, "body": preview[:160], "url": url, "conversation_id": conversation_id}
+    for subscription in subscriptions:
+        await push.send(subscription, payload)
+
+
 @api_router.get("/chat/conversations")
 async def list_admin_conversations(admin: dict = Depends(get_current_admin)):
     """Returns conversation list for all workers in the admin's business."""
@@ -1518,6 +1584,12 @@ async def send_message(body: MessageCreate, request: Request):
         }
     )
 
+    # Notification delivery is deliberately detached from the successful chat write.
+    asyncio.create_task(deliver_chat_push(
+        business_id=biz_id, worker_id=worker_id, sender_type=sender_type,
+        conversation_id=conv_id, preview=preview,
+    ))
+
     msg_doc.pop("_id", None)
     return msg_doc
 
@@ -1681,6 +1753,8 @@ async def startup():
         await db.password_reset_tokens.create_index("token_hash", unique=True)
         await db.password_reset_tokens.create_index("expires_at")
         await db.voice_assets.create_index([("business_id", ASCENDING), ("conversation_id", ASCENDING)])
+        await db.push_subscriptions.create_index("endpoint", unique=True)
+        await db.push_subscriptions.create_index([("business_id", ASCENDING), ("recipient_type", ASCENDING), ("recipient_id", ASCENDING)])
         logger.info("Database indexes successfully verified.")
     except Exception as e:
         logger.warning(f"Index creation notice: {e}")

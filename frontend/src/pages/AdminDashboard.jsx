@@ -15,6 +15,7 @@ import WorkerViewModal from "@/components/workerview/WorkerViewModal";
 import AudioPlayer from "@/components/chat/AudioPlayer";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
+import { enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
 import {
   HardHat, LayoutDashboard, Users, CalendarCheck, Wallet, Sparkles, LogOut,
   Plus, Pencil, Trash2, Loader2, Menu, X, Search, ArrowUpRight, UserPlus,
@@ -43,13 +44,14 @@ const attStyle = {
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const { admin, loading, logout, setAdmin } = useAdminAuth();
-  const [view, setView] = useState("overview");
+  const [view, setView] = useState(() => new URLSearchParams(window.location.search).has("conversation") ? "messages" : "overview");
   const [workers, setWorkers] = useState([]);
   const [sidebar, setSidebar] = useState(false);
   const [bizEditOpen, setBizEditOpen] = useState(false);
   const [bizName, setBizName] = useState("");
   const [bizSaving, setBizSaving] = useState(false);
   const [activeWorkerForView, setActiveWorkerForView] = useState(null);
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
   const loadWorkers = useCallback(async () => {
     try {
@@ -60,13 +62,29 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  const loadUnreadMessages = useCallback(async () => {
+    try {
+      const { data } = await adminApi.get("/chat/conversations");
+      const count = data.reduce((total, conversation) => total + (conversation.unread_count || 0), 0);
+      setUnreadMessages(count);
+      updateAppBadge(count);
+    } catch (_) {}
+  }, []);
+
   useEffect(() => {
     if (!loading && !admin) navigate("/admin/login");
     if (admin) {
       loadWorkers();
+      loadUnreadMessages();
       setBizName(admin.business_name || admin.business?.name || "My Business");
     }
-  }, [admin, loading, navigate, loadWorkers]);
+  }, [admin, loading, navigate, loadWorkers, loadUnreadMessages]);
+
+  useEffect(() => {
+    if (!admin) return undefined;
+    const interval = setInterval(loadUnreadMessages, 10000);
+    return () => clearInterval(interval);
+  }, [admin, loadUnreadMessages]);
 
   const doLogout = async () => {
     await logout();
@@ -160,6 +178,7 @@ export default function AdminDashboard() {
             >
               <n.icon className={`h-4 w-4 shrink-0 ${view === n.key ? "text-slate-950" : "text-teal-300"}`} />
               <span className="truncate">{n.label}</span>
+              {n.key === "messages" && unreadMessages > 0 && <span className="ml-auto min-w-5 h-5 px-1 rounded-full bg-rose-500 text-white text-[10px] flex items-center justify-center">{unreadMessages}</span>}
             </button>
           ))}
         </nav>
@@ -216,7 +235,7 @@ export default function AdminDashboard() {
           {view === "attendance" && <AttendanceSection workers={workers} />}
           {view === "payments" && <PaymentsSection workers={workers} />}
           {view === "extra" && <ExtraSection workers={workers} />}
-          {view === "messages" && <MessagesSection workers={workers} />}
+          {view === "messages" && <MessagesSection workers={workers} onUnreadChange={loadUnreadMessages} />}
         </main>
       </div>
 
@@ -1508,21 +1527,24 @@ function ExtraSection({ workers }) {
 }
 
 /* ---------------- 6. Messages / Chat Section ---------------- */
-function MessagesSection({ workers }) {
+function MessagesSection({ workers, onUnreadChange }) {
   const [conversations, setConversations] = useState([]);
   const [activeConv, setActiveConv] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
+  const [enablingNotifications, setEnablingNotifications] = useState(false);
   const messagesEndRef = useRef(null);
 
   const loadConversations = useCallback(async () => {
     try {
       const res = await adminApi.get("/chat/conversations");
       setConversations(res.data);
+      onUnreadChange?.();
       if (!activeConv && res.data.length > 0) {
-        setActiveConv(res.data[0]);
+        const requested = new URLSearchParams(window.location.search).get("conversation");
+        setActiveConv(res.data.find((item) => item.conversation_id === requested) || res.data[0]);
       }
     } catch (e) {
       console.error(e);
@@ -1534,6 +1556,8 @@ function MessagesSection({ workers }) {
     try {
       const res = await adminApi.get(`/chat/conversations/${activeConv.conversation_id}/messages`);
       setMessages(res.data);
+      setConversations((items) => items.map((item) => item.conversation_id === activeConv.conversation_id ? { ...item, unread_count: 0 } : item));
+      onUnreadChange?.();
     } catch (e) {
       console.error(e);
     }
@@ -1552,6 +1576,18 @@ function MessagesSection({ workers }) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const enableNotifications = async () => {
+    setEnablingNotifications(true);
+    try {
+      await enablePushNotifications(true);
+      toast.success("Notifications enabled / नोटिफिकेशन चालू हैं");
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setEnablingNotifications(false);
+    }
+  };
 
   const handleSendText = async (e) => {
     e?.preventDefault();
@@ -1600,6 +1636,9 @@ function MessagesSection({ workers }) {
         <p className="text-slate-500 text-sm">
           Chat with workers directly through text messages, voice notes, and speech typing.
         </p>
+        {pushSupported() && <Button type="button" variant="outline" size="sm" onClick={enableNotifications} disabled={enablingNotifications} className="mt-3 rounded-xl text-xs">
+          {enablingNotifications ? "Enabling…" : "Enable Notifications / नोटिफिकेशन चालू करें"}
+        </Button>}
       </div>
 
       <div className="bg-white border border-stone-200 rounded-3xl shadow-md overflow-hidden grid md:grid-cols-[300px_1fr] h-[72vh] min-h-[500px]">
@@ -1724,6 +1763,7 @@ function MessagesSection({ workers }) {
                   <SpeechTyping
                     currentText={text}
                     onSpeechResult={(transcript) => setText(transcript)}
+                    disabled={showRecorder}
                   />
 
                   {/* Text Input */}
