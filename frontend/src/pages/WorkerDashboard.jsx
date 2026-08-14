@@ -9,6 +9,8 @@ import { toast } from "sonner";
 import AudioPlayer from "@/components/chat/AudioPlayer";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
+import UnreadBadge from "@/components/chat/UnreadBadge";
+import useSmartChatScroll from "@/components/chat/useSmartChatScroll";
 import { enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
 import {
   Loader2,
@@ -60,7 +62,8 @@ export default function WorkerDashboard() {
   const [sendingMsg, setSendingMsg] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
   const [enablingNotifications, setEnablingNotifications] = useState(false);
-  const messagesEndRef = useRef(null);
+  const chatRequestRef = useRef(0);
+  const { listRef: messageListRef, onScroll: handleMessageScroll, scrollAfterSend } = useSmartChatScroll(messages, chatConv?.conversation_id);
 
   const loadData = useCallback(async () => {
     try {
@@ -74,18 +77,23 @@ export default function WorkerDashboard() {
   }, []);
 
   const loadChat = useCallback(async () => {
+    const requestId = ++chatRequestRef.current;
     try {
       const { data: conv } = await workerApi.get("/chat/worker-conversation");
-      setChatConv(conv);
-      updateAppBadge(conv.unread_count || 0);
+      if (requestId !== chatRequestRef.current) return;
       // Reading the thread is the deliberate action that clears read_at/unread count.
       if (tab === "messages") {
         const { data: msgs } = await workerApi.get(`/chat/conversations/${conv.conversation_id}/messages`);
+        if (requestId !== chatRequestRef.current) return;
+        // Re-fetch after the backend read update. This response, not local state, owns the badge.
+        const { data: refreshedConv } = await workerApi.get("/chat/worker-conversation");
+        if (requestId !== chatRequestRef.current) return;
         setMessages(msgs);
-        if (conv.unread_count) {
-          setChatConv((current) => current ? { ...current, unread_count: 0 } : current);
-          updateAppBadge(0);
-        }
+        setChatConv(refreshedConv);
+        updateAppBadge(refreshedConv.unread_count);
+      } else {
+        setChatConv(conv);
+        updateAppBadge(conv.unread_count);
       }
     } catch (e) {
       console.error(e);
@@ -108,12 +116,6 @@ export default function WorkerDashboard() {
       return () => clearInterval(interval);
     }
   }, [tab, loadChat]);
-
-  useEffect(() => {
-    if (tab === "messages") {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages, tab]);
 
   const enableNotifications = async () => {
     setEnablingNotifications(true);
@@ -139,6 +141,7 @@ export default function WorkerDashboard() {
         text: msgText.trim(),
       });
       setMsgText("");
+      scrollAfterSend();
       loadChat();
     } catch (err) {
       toast.error(apiError(err));
@@ -158,6 +161,7 @@ export default function WorkerDashboard() {
         duration,
       });
       setShowRecorder(false);
+      scrollAfterSend();
       loadChat();
       toast.success("आवाज़ संदेश भेजा गया / Voice message sent");
     } catch (err) {
@@ -167,6 +171,7 @@ export default function WorkerDashboard() {
 
   const doLogout = async () => {
     await logout();
+    updateAppBadge(0);
     navigate("/worker/login");
   };
 
@@ -238,7 +243,7 @@ export default function WorkerDashboard() {
             >
               <t.icon className="h-4 w-4" />
               <span>{t.label}</span>
-              {t.key === "messages" && chatConv?.unread_count > 0 && <span className="min-w-5 h-5 px-1 rounded-full bg-rose-500 text-white text-[10px] flex items-center justify-center">{chatConv.unread_count}</span>}
+              {t.key === "messages" && <UnreadBadge count={chatConv?.unread_count} className="bg-rose-500 text-white" />}
             </button>
           ))}
         </div>
@@ -488,15 +493,15 @@ export default function WorkerDashboard() {
 
             {/* 4. MESSAGES / CHAT TAB */}
             {tab === "messages" && (
-              <div className="bg-white border border-stone-200 rounded-3xl shadow-md overflow-hidden flex flex-col h-[70vh] min-h-[480px]">
+              <div className="chat-shell bg-white border border-stone-200 rounded-3xl shadow-md overflow-hidden flex flex-col">
                 {/* Chat Header */}
-                    <div className="p-4 border-b border-stone-200 bg-[#102f2c] text-white flex items-center justify-between">
-                  <div className="flex items-center gap-3">
+                    <div className="p-3 sm:p-4 border-b border-stone-200 bg-[#102f2c] text-white flex items-center justify-between gap-2 shrink-0">
+                  <div className="flex items-center gap-3 min-w-0">
                     <div className="h-9 w-9 rounded-xl bg-amber-400 text-slate-950 flex items-center justify-center font-bold">
                       <HardHat className="h-5 w-5" />
                     </div>
-                    <div>
-                      <h2 className="font-display font-bold text-base text-white">
+                    <div className="min-w-0">
+                      <h2 className="font-display font-bold text-sm sm:text-base text-white truncate">
                         मालिक से बातचीत / Chat with Owner
                       </h2>
                       <p className="text-xs text-teal-300">
@@ -504,13 +509,13 @@ export default function WorkerDashboard() {
                       </p>
                     </div>
                   </div>
-                  {pushSupported() && <Button type="button" variant="outline" size="sm" onClick={enableNotifications} disabled={enablingNotifications} className="rounded-xl text-xs bg-white text-teal-900">
+                  {pushSupported() && <Button type="button" variant="outline" size="sm" onClick={enableNotifications} disabled={enablingNotifications} className="rounded-xl text-xs bg-white text-teal-900 max-w-28 sm:max-w-none truncate shrink-0">
                     {enablingNotifications ? "Enabling…" : "Enable Notifications / नोटिफिकेशन चालू करें"}
                   </Button>}
                 </div>
 
                 {/* Message Log */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#fcfbfa]">
+                <div ref={messageListRef} onScroll={handleMessageScroll} className="chat-thread flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 bg-[#fcfbfa]">
                   {messages.length === 0 && (
                     <div className="h-full flex items-center justify-center text-center text-slate-400 text-sm">
                       <div>
@@ -520,22 +525,23 @@ export default function WorkerDashboard() {
                     </div>
                   )}
 
-                  {messages.map((m) => {
+                  {messages.map((m, index) => {
                     const isWorker = m.sender_type === "worker";
+                    const showSender = index === 0 || messages[index - 1].sender_type !== m.sender_type;
                     return (
                       <div
                         key={m.id}
                         className={`flex flex-col ${isWorker ? "items-end" : "items-start"}`}
                       >
-                        <span className="text-[10px] text-slate-400 mb-1 px-1">
+                        {showSender && <span className="text-[10px] text-slate-400 mb-1 px-1">
                           {isWorker ? "आप (You)" : "मालिक (Owner)"}
-                        </span>
+                        </span>}
 
                         {m.message_type === "audio" ? (
                           <AudioPlayer audioUrl={m.audio_url} duration={m.duration} />
                         ) : (
                           <div
-                            className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
+                            className={`chat-bubble rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
                               isWorker
                                 ? "bg-teal-800 text-white rounded-br-none"
                                 : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
@@ -544,14 +550,17 @@ export default function WorkerDashboard() {
                             {m.text}
                           </div>
                         )}
+                        <span className="min-h-[14px] text-[10px] leading-[14px] text-slate-400 mt-0.5 px-1 tabular-nums">
+                          {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}
+                          {isWorker ? ` · ${m.read_at ? "Seen" : "Sent"}` : ""}
+                        </span>
                       </div>
                     );
                   })}
-                  <div ref={messagesEndRef} />
                 </div>
 
                 {/* Chat Action Area */}
-                <div className="p-3 bg-white border-t border-stone-200 space-y-2">
+                <div className="chat-composer p-3 bg-white border-t border-stone-200 space-y-2 shrink-0">
                   {showRecorder ? (
                     <VoiceRecorder
                       conversationId={chatConv.conversation_id}
@@ -560,7 +569,7 @@ export default function WorkerDashboard() {
                       onCancel={() => setShowRecorder(false)}
                     />
                   ) : (
-                    <form onSubmit={handleSendText} className="flex items-center gap-2">
+                    <form onSubmit={handleSendText} className="chat-composer-form flex items-center gap-2 min-w-0">
                       {/* Voice Note Record */}
                       <button
                         type="button"
@@ -584,7 +593,7 @@ export default function WorkerDashboard() {
                         placeholder="संदेश लिखें / Type message..."
                         value={msgText}
                         onChange={(e) => setMsgText(e.target.value)}
-                        className="rounded-xl h-10 text-sm"
+                        className="rounded-xl h-10 text-sm min-w-0 flex-1"
                       />
 
                       <Button

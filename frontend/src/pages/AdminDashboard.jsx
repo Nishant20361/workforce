@@ -15,6 +15,8 @@ import WorkerViewModal from "@/components/workerview/WorkerViewModal";
 import AudioPlayer from "@/components/chat/AudioPlayer";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
+import UnreadBadge from "@/components/chat/UnreadBadge";
+import useSmartChatScroll from "@/components/chat/useSmartChatScroll";
 import { enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
 import {
   HardHat, LayoutDashboard, Users, CalendarCheck, Wallet, Sparkles, LogOut,
@@ -52,6 +54,7 @@ export default function AdminDashboard() {
   const [bizSaving, setBizSaving] = useState(false);
   const [activeWorkerForView, setActiveWorkerForView] = useState(null);
   const [unreadMessages, setUnreadMessages] = useState(0);
+  const unreadRequestRef = useRef(0);
 
   const loadWorkers = useCallback(async () => {
     try {
@@ -63,8 +66,10 @@ export default function AdminDashboard() {
   }, []);
 
   const loadUnreadMessages = useCallback(async () => {
+    const requestId = ++unreadRequestRef.current;
     try {
       const { data } = await adminApi.get("/chat/conversations");
+      if (requestId !== unreadRequestRef.current) return;
       const count = data.reduce((total, conversation) => total + (conversation.unread_count || 0), 0);
       setUnreadMessages(count);
       updateAppBadge(count);
@@ -88,6 +93,7 @@ export default function AdminDashboard() {
 
   const doLogout = async () => {
     await logout();
+    updateAppBadge(0);
     navigate("/admin/login");
   };
 
@@ -178,7 +184,7 @@ export default function AdminDashboard() {
             >
               <n.icon className={`h-4 w-4 shrink-0 ${view === n.key ? "text-slate-950" : "text-teal-300"}`} />
               <span className="truncate">{n.label}</span>
-              {n.key === "messages" && unreadMessages > 0 && <span className="ml-auto min-w-5 h-5 px-1 rounded-full bg-rose-500 text-white text-[10px] flex items-center justify-center">{unreadMessages}</span>}
+              {n.key === "messages" && <UnreadBadge count={unreadMessages} className="ml-auto bg-rose-500 text-white" />}
             </button>
           ))}
         </nav>
@@ -1535,13 +1541,17 @@ function MessagesSection({ workers, onUnreadChange }) {
   const [sending, setSending] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
   const [enablingNotifications, setEnablingNotifications] = useState(false);
-  const messagesEndRef = useRef(null);
+  const conversationsRequestRef = useRef(0);
+  const messagesRequestRef = useRef(0);
+  const { listRef: messageListRef, onScroll: handleMessageScroll, scrollAfterSend } = useSmartChatScroll(messages, activeConv?.conversation_id);
 
   const loadConversations = useCallback(async () => {
+    const requestId = ++conversationsRequestRef.current;
     try {
       const res = await adminApi.get("/chat/conversations");
+      if (requestId !== conversationsRequestRef.current) return;
       setConversations(res.data);
-      onUnreadChange?.();
+      await onUnreadChange?.();
       if (!activeConv && res.data.length > 0) {
         const requested = new URLSearchParams(window.location.search).get("conversation");
         setActiveConv(res.data.find((item) => item.conversation_id === requested) || res.data[0]);
@@ -1553,15 +1563,19 @@ function MessagesSection({ workers, onUnreadChange }) {
 
   const loadMessages = useCallback(async () => {
     if (!activeConv) return;
+    const conversationId = activeConv.conversation_id;
+    const requestId = ++messagesRequestRef.current;
     try {
-      const res = await adminApi.get(`/chat/conversations/${activeConv.conversation_id}/messages`);
+      const res = await adminApi.get(`/chat/conversations/${conversationId}/messages`);
+      if (requestId !== messagesRequestRef.current || conversationId !== activeConv.conversation_id) return;
       setMessages(res.data);
-      setConversations((items) => items.map((item) => item.conversation_id === activeConv.conversation_id ? { ...item, unread_count: 0 } : item));
-      onUnreadChange?.();
+      // Give immediate feedback, then replace it with the backend-authoritative list/count.
+      setConversations((items) => items.map((item) => item.conversation_id === conversationId ? { ...item, unread_count: 0 } : item));
+      await loadConversations();
     } catch (e) {
       console.error(e);
     }
-  }, [activeConv]);
+  }, [activeConv, loadConversations]);
 
   useEffect(() => {
     loadConversations();
@@ -1572,10 +1586,6 @@ function MessagesSection({ workers, onUnreadChange }) {
     const interval = setInterval(loadMessages, 3500); // Polling for new chat messages
     return () => clearInterval(interval);
   }, [loadMessages]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   const enableNotifications = async () => {
     setEnablingNotifications(true);
@@ -1601,6 +1611,7 @@ function MessagesSection({ workers, onUnreadChange }) {
         text: text.trim(),
       });
       setText("");
+      scrollAfterSend();
       loadMessages();
       loadConversations();
     } catch (err) {
@@ -1621,6 +1632,7 @@ function MessagesSection({ workers, onUnreadChange }) {
         duration,
       });
       setShowRecorder(false);
+      scrollAfterSend();
       loadMessages();
       loadConversations();
       toast.success("Voice note sent / आवाज़ संदेश भेजा गया");
@@ -1641,9 +1653,9 @@ function MessagesSection({ workers, onUnreadChange }) {
         </Button>}
       </div>
 
-      <div className="bg-white border border-stone-200 rounded-3xl shadow-md overflow-hidden grid md:grid-cols-[300px_1fr] h-[72vh] min-h-[500px]">
+      <div className="chat-shell-admin bg-white border border-stone-200 rounded-3xl shadow-md overflow-hidden grid md:grid-cols-[300px_1fr]">
         {/* Left Side: Worker Conversations List */}
-        <div className="border-r border-stone-200 flex flex-col bg-stone-50/50">
+        <div className="border-b md:border-b-0 md:border-r border-stone-200 flex flex-col bg-stone-50/50 min-h-0">
           <div className="p-4 border-b border-stone-200 bg-white">
             <span className="text-xs font-bold text-teal-800 uppercase tracking-wider block">
               कर्मचारी / Worker Chats
@@ -1671,9 +1683,7 @@ function MessagesSection({ workers, onUnreadChange }) {
                     </p>
                   </div>
                   {c.unread_count > 0 && (
-                    <span className="h-5 min-w-5 px-1.5 rounded-full bg-amber-400 text-slate-950 font-bold text-[10px] flex items-center justify-center">
-                      {c.unread_count}
-                    </span>
+                    <UnreadBadge count={c.unread_count} className="bg-amber-400 text-slate-950" />
                   )}
                 </button>
               );
@@ -1683,7 +1693,7 @@ function MessagesSection({ workers, onUnreadChange }) {
 
         {/* Right Side: Active Chat Window */}
         {activeConv ? (
-          <div className="flex flex-col h-full bg-[#fcfbfa]">
+          <div className="flex flex-col h-full min-h-0 bg-[#fcfbfa]">
             {/* Chat Header */}
             <div className="p-4 border-b border-stone-200 bg-white flex items-center justify-between">
               <div>
@@ -1697,7 +1707,7 @@ function MessagesSection({ workers, onUnreadChange }) {
             </div>
 
             {/* Message Thread */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div ref={messageListRef} onScroll={handleMessageScroll} className="chat-thread flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
               {messages.length === 0 && (
                 <div className="h-full flex items-center justify-center text-center text-slate-400 text-sm">
                   <div>
@@ -1707,22 +1717,23 @@ function MessagesSection({ workers, onUnreadChange }) {
                 </div>
               )}
 
-              {messages.map((m) => {
+              {messages.map((m, index) => {
                 const isOwner = m.sender_type === "owner";
+                const showSender = index === 0 || messages[index - 1].sender_type !== m.sender_type;
                 return (
                   <div
                     key={m.id}
                     className={`flex flex-col ${isOwner ? "items-end" : "items-start"}`}
                   >
-                    <span className="text-[10px] text-slate-400 mb-1 px-1">
+                    {showSender && <span className="text-[10px] text-slate-400 mb-1 px-1">
                       {isOwner ? "आप (Owner)" : activeConv.worker.name}
-                    </span>
+                    </span>}
 
                     {m.message_type === "audio" ? (
                       <AudioPlayer audioUrl={m.audio_url} duration={m.duration} />
                     ) : (
                       <div
-                        className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
+                        className={`chat-bubble rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
                           isOwner
                             ? "bg-teal-800 text-white rounded-br-none"
                             : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
@@ -1731,14 +1742,17 @@ function MessagesSection({ workers, onUnreadChange }) {
                         {m.text}
                       </div>
                     )}
+                    <span className="min-h-[14px] text-[10px] leading-[14px] text-slate-400 mt-0.5 px-1 tabular-nums">
+                      {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}
+                      {isOwner ? ` · ${m.read_at ? "Seen" : "Sent"}` : ""}
+                    </span>
                   </div>
                 );
               })}
-              <div ref={messagesEndRef} />
             </div>
 
             {/* Recorder or Chat Input */}
-            <div className="p-3 bg-white border-t border-stone-200 space-y-2">
+            <div className="chat-composer p-3 bg-white border-t border-stone-200 space-y-2 shrink-0">
               {showRecorder ? (
                 <VoiceRecorder
                   conversationId={activeConv.conversation_id}
@@ -1747,7 +1761,7 @@ function MessagesSection({ workers, onUnreadChange }) {
                   onCancel={() => setShowRecorder(false)}
                 />
               ) : (
-                <form onSubmit={handleSendText} className="flex items-center gap-2">
+                <form onSubmit={handleSendText} className="chat-composer-form flex items-center gap-2 min-w-0">
                   {/* Voice Note Button */}
                   <button
                     type="button"
@@ -1771,7 +1785,7 @@ function MessagesSection({ workers, onUnreadChange }) {
                     placeholder="संदेश लिखें / Type message..."
                     value={text}
                     onChange={(e) => setText(e.target.value)}
-                    className="rounded-xl h-10 text-sm"
+                    className="rounded-xl h-10 text-sm min-w-0 flex-1"
                   />
 
                   <Button

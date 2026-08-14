@@ -128,7 +128,7 @@ export default function VoiceRecorder({ onSend, conversationId, isAdmin = false,
   };
 
   return (
-    <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-2xl animate-in fade-in-50">
+    <div className="flex flex-wrap items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-2xl animate-in fade-in-50">
       {audioUrl && (
         <audio
           ref={previewAudioRef}
@@ -139,11 +139,11 @@ export default function VoiceRecorder({ onSend, conversationId, isAdmin = false,
 
       {/* When not started and no blob */}
       {!recording && !audioBlob && (
-        <div className="flex items-center justify-between w-full">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 w-full min-w-0">
           <span className="text-sm font-medium text-amber-900 flex items-center gap-2">
             <Mic className="h-4 w-4 text-amber-700" /> आवाज़ रिकॉर्ड करें / Record voice note
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={startRecording}
@@ -164,7 +164,7 @@ export default function VoiceRecorder({ onSend, conversationId, isAdmin = false,
 
       {/* While Recording */}
       {recording && (
-        <div className="flex items-center justify-between w-full">
+        <div className="flex flex-wrap items-center justify-between gap-2 w-full min-w-0">
           <div className="flex items-center gap-3">
             <span className="relative flex h-3 w-3">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
@@ -197,7 +197,7 @@ export default function VoiceRecorder({ onSend, conversationId, isAdmin = false,
 
       {/* After Recording Stopped, Preview & Send */}
       {!recording && audioBlob && (
-        <div className="flex items-center justify-between w-full">
+        <div className="flex flex-wrap items-center justify-between gap-2 w-full min-w-0">
           <div className="flex items-center gap-2">
             <button
               type="button"

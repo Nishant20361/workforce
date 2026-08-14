@@ -58,7 +58,7 @@ export default function SpeechTyping({ onSpeechResult, currentText = "", disable
     }
   }, [disabled]);
 
-  if (!supported) return <span className="text-[11px] text-slate-500" role="status">Voice typing unavailable; text and voice messages still work.</span>;
+  if (!supported) return <span className="hidden sm:inline text-[11px] text-slate-500" role="status">Voice typing unavailable; text and voice messages still work.</span>;
 
   const toggleListening = (e) => {
     e.preventDefault();

@@ -23,6 +23,7 @@ export async function enablePushNotifications(isAdmin) {
 }
 
 export function updateAppBadge(count) {
-  if (count > 0 && typeof navigator.setAppBadge === "function") navigator.setAppBadge(count).catch(() => {});
-  if (count === 0 && typeof navigator.clearAppBadge === "function") navigator.clearAppBadge().catch(() => {});
+  const unread = Math.max(0, Number(count) || 0);
+  if (unread > 0 && typeof navigator.setAppBadge === "function") navigator.setAppBadge(unread).catch(() => {});
+  if (unread === 0 && typeof navigator.clearAppBadge === "function") navigator.clearAppBadge().catch(() => {});
 }
