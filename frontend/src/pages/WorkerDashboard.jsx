@@ -9,7 +9,6 @@ import { toast } from "sonner";
 import AudioPlayer from "@/components/chat/AudioPlayer";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
-import UnreadBadge from "@/components/chat/UnreadBadge";
 import useSmartChatScroll from "@/components/chat/useSmartChatScroll";
 import { clearConversationNotifications, enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
 import {
@@ -237,7 +236,6 @@ export default function WorkerDashboard() {
             >
               <t.icon className="h-4 w-4" />
               <span>{t.label}</span>
-              {t.key === "messages" && <UnreadBadge count={chatConv?.unread_count} className="bg-rose-500 text-white" />}
             </button>
           ))}
         </div>

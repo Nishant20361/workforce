@@ -15,7 +15,6 @@ import WorkerViewModal from "@/components/workerview/WorkerViewModal";
 import AudioPlayer from "@/components/chat/AudioPlayer";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
-import UnreadBadge from "@/components/chat/UnreadBadge";
 import useSmartChatScroll from "@/components/chat/useSmartChatScroll";
 import { clearConversationNotifications, enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
 import {
@@ -194,7 +193,6 @@ export default function AdminDashboard() {
             >
               <n.icon className={`h-4 w-4 shrink-0 ${view === n.key ? "text-slate-950" : "text-teal-300"}`} />
               <span className="truncate">{n.label}</span>
-              {n.key === "messages" && <UnreadBadge count={unreadMessages} className="ml-auto bg-rose-500 text-white" />}
             </button>
           ))}
         </nav>
@@ -1683,9 +1681,6 @@ function MessagesSection({ workers, onUnreadChange }) {
                       {c.last_message?.text || c.worker.work_type}
                     </p>
                   </div>
-                  {c.unread_count > 0 && (
-                    <UnreadBadge count={c.unread_count} className="bg-amber-400 text-slate-950" />
-                  )}
                 </button>
               );
             })}
