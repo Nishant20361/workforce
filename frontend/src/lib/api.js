@@ -15,15 +15,37 @@ let workerCsrf = null;
 export const setAdminCsrf = (value) => { adminCsrf = value || null; };
 export const setWorkerCsrf = (value) => { workerCsrf = value || null; };
 
-const csrfInterceptor = (getToken) => (config) => {
-  if (["post", "put", "patch", "delete"].includes(config.method) && getToken()) {
+export function csrfTokenFromCookie() {
+  if (typeof document === "undefined") return null;
+  const cookie = document.cookie.split("; ").find((entry) => entry.startsWith("csrf_token="));
+  return cookie ? decodeURIComponent(cookie.slice("csrf_token=".length)) : null;
+}
+
+export function applyCsrfHeader(config, memoryToken) {
+  const token = csrfTokenFromCookie() || memoryToken;
+  if (["post", "put", "patch", "delete"].includes(config.method?.toLowerCase()) && token) {
     config.headers = config.headers || {};
-    config.headers["X-CSRF-Token"] = getToken();
+    config.headers["X-CSRF-Token"] = token;
   }
   return config;
+}
+
+const csrfInterceptor = (getToken) => (config) => {
+  return applyCsrfHeader(config, getToken());
 };
 adminApi.interceptors.request.use(csrfInterceptor(() => adminCsrf));
 workerApi.interceptors.request.use(csrfInterceptor(() => workerCsrf));
+
+// Session refresh endpoints return a fresh token. Keep the next mutating request
+// synchronized even if the PWA was resumed while the cookie changed.
+adminApi.interceptors.response?.use((response) => {
+  if (response.data?.csrf_token) setAdminCsrf(response.data.csrf_token);
+  return response;
+});
+workerApi.interceptors.response?.use((response) => {
+  if (response.data?.csrf_token) setWorkerCsrf(response.data.csrf_token);
+  return response;
+});
 
 export function apiError(e) {
   const detail = e?.response?.data?.detail;
