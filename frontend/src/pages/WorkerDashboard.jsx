@@ -62,7 +62,6 @@ export default function WorkerDashboard() {
   const [msgText, setMsgText] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
-  const [enablingNotifications, setEnablingNotifications] = useState(false);
   const chatRequestRef = useRef(0);
   const { listRef: messageListRef, onScroll: handleMessageScroll, scrollAfterSend } = useSmartChatScroll(messages, chatConv?.conversation_id);
 
@@ -113,23 +112,16 @@ export default function WorkerDashboard() {
   }, [user, authLoading, navigate, loadData, loadChat]);
 
   useEffect(() => {
+    if (!user || !pushSupported()) return;
+    enablePushNotifications(false).catch(() => {});
+  }, [user]);
+
+  useEffect(() => {
     if (tab === "messages") {
       const interval = setInterval(loadChat, 3500);
       return () => clearInterval(interval);
     }
   }, [tab, loadChat]);
-
-  const enableNotifications = async () => {
-    setEnablingNotifications(true);
-    try {
-      await enablePushNotifications(false);
-      toast.success("Notifications enabled / नोटिफिकेशन चालू हैं");
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setEnablingNotifications(false);
-    }
-  };
 
   const handleSendText = async (e) => {
     e?.preventDefault();
@@ -511,9 +503,6 @@ export default function WorkerDashboard() {
                       </p>
                     </div>
                   </div>
-                  {pushSupported() && <Button type="button" variant="outline" size="sm" onClick={enableNotifications} disabled={enablingNotifications} className="rounded-xl text-xs bg-white text-teal-900 max-w-28 sm:max-w-none truncate shrink-0">
-                    {enablingNotifications ? "Enabling…" : "Enable Notifications / नोटिफिकेशन चालू करें"}
-                  </Button>}
                 </div>
 
                 {/* Message Log */}

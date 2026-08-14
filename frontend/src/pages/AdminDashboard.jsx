@@ -91,6 +91,11 @@ export default function AdminDashboard() {
   }, [admin, loading, navigate, loadWorkers, loadUnreadMessages]);
 
   useEffect(() => {
+    if (!admin || !pushSupported()) return;
+    enablePushNotifications(true).catch(() => {});
+  }, [admin]);
+
+  useEffect(() => {
     if (!admin) return undefined;
     const interval = setInterval(loadUnreadMessages, 10000);
     return () => clearInterval(interval);
@@ -1546,7 +1551,6 @@ function MessagesSection({ workers, onUnreadChange }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
-  const [enablingNotifications, setEnablingNotifications] = useState(false);
   const conversationsRequestRef = useRef(0);
   const messagesRequestRef = useRef(0);
   const { listRef: messageListRef, onScroll: handleMessageScroll, scrollAfterSend } = useSmartChatScroll(messages, activeConv?.conversation_id);
@@ -1599,18 +1603,6 @@ function MessagesSection({ workers, onUnreadChange }) {
     return () => clearInterval(interval);
   }, [loadMessages]);
 
-  const enableNotifications = async () => {
-    setEnablingNotifications(true);
-    try {
-      await enablePushNotifications(true);
-      toast.success("Notifications enabled / नोटिफिकेशन चालू हैं");
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setEnablingNotifications(false);
-    }
-  };
-
   const handleSendText = async (e) => {
     e?.preventDefault();
     if (!text.trim() || !activeConv) return;
@@ -1660,9 +1652,6 @@ function MessagesSection({ workers, onUnreadChange }) {
         <p className="text-slate-500 text-sm">
           Chat with workers directly through text messages, voice notes, and speech typing.
         </p>
-        {pushSupported() && <Button type="button" variant="outline" size="sm" onClick={enableNotifications} disabled={enablingNotifications} className="mt-3 rounded-xl text-xs">
-          {enablingNotifications ? "Enabling…" : "Enable Notifications / नोटिफिकेशन चालू करें"}
-        </Button>}
       </div>
 
       <div className="chat-shell-admin bg-white border border-stone-200 rounded-3xl shadow-md overflow-hidden grid md:grid-cols-[300px_1fr]">

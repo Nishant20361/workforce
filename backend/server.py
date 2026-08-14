@@ -64,7 +64,7 @@ IS_PRODUCTION = ENVIRONMENT == "production"
 COOKIE_SECURE = IS_PRODUCTION or os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "none" if IS_PRODUCTION else "lax").lower()
 SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE_SECONDS", "5184000"))
-MESSAGE_READ_RETENTION = timedelta(hours=48)
+MESSAGE_RETENTION = timedelta(hours=48)
 voice_storage = VoiceStorage()
 
 app = FastAPI(title="WorkForce API")
@@ -89,9 +89,9 @@ def parse_utc_datetime(value: Any) -> Optional[datetime]:
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
 
-def message_expiry_from_read_at(read_at: Any) -> Optional[datetime]:
-    parsed = parse_utc_datetime(read_at)
-    return parsed + MESSAGE_READ_RETENTION if parsed else None
+def message_expiry_from_created_at(created_at: Any) -> Optional[datetime]:
+    parsed = parse_utc_datetime(created_at)
+    return parsed + MESSAGE_RETENTION if parsed else None
 
 
 def visible_message_filter(now: Optional[datetime] = None) -> dict:
@@ -1548,27 +1548,11 @@ async def persist_conversation_read(conversation_id: str, is_admin: bool, conv: 
         {"_id": 0, "id": 1},
         sort=[("created_at", ASCENDING)],
     )
-    now_dt = datetime.now(timezone.utc)
-    now_iso = now_dt.isoformat()
-    expires_at = now_dt + MESSAGE_READ_RETENTION
-    audio_messages = await db.messages.find(
-        {**unread_query, "message_type": "audio", "audio_asset_id": {"$ne": None}},
-        {"_id": 0, "audio_asset_id": 1},
-    ).to_list(10000)
+    now_iso = datetime.now(timezone.utc).isoformat()
     result = await db.messages.update_many(
         unread_query,
-        {"$set": {"read_at": now_iso, "expires_at": expires_at}},
+        {"$set": {"read_at": now_iso}},
     )
-    audio_asset_ids = [message["audio_asset_id"] for message in audio_messages if message.get("audio_asset_id")]
-    if audio_asset_ids:
-        await db.voice_assets.update_many(
-            {
-                "id": {"$in": audio_asset_ids},
-                "business_id": conv["business_id"],
-                "conversation_id": conversation_id,
-            },
-            {"$set": {"expires_at": expires_at}},
-        )
 
     total_query = {
         "business_id": conv["business_id"],
@@ -1591,25 +1575,16 @@ async def persist_conversation_read(conversation_id: str, is_admin: bool, conv: 
 
 
 async def migrate_message_expirations() -> int:
-    """Backfill expiry for old read messages and remove expiry from unread ones."""
-    await db.messages.update_many(
-        {
-            "$and": [
-                {"$or": [{"read_at": None}, {"read_at": ""}, {"read_at": {"$exists": False}}]},
-                {"expires_at": {"$exists": True}},
-            ]
-        },
-        {"$unset": {"expires_at": ""}},
-    )
+    """Backfill creation-based expiry for old messages without touching unrelated data."""
     migrated = 0
     cursor = db.messages.find(
-        {"read_at": {"$nin": [None, ""]}, "expires_at": {"$exists": False}},
-        {"_id": 1, "id": 1, "business_id": 1, "conversation_id": 1, "audio_asset_id": 1, "read_at": 1},
+        {"created_at": {"$nin": [None, ""]}, "expires_at": {"$exists": False}},
+        {"_id": 1, "id": 1, "business_id": 1, "conversation_id": 1, "audio_asset_id": 1, "created_at": 1},
     )
     async for message in cursor:
-        expires_at = message_expiry_from_read_at(message.get("read_at"))
+        expires_at = message_expiry_from_created_at(message.get("created_at"))
         if not expires_at:
-            logger.warning("Skipping message with invalid read_at during expiry migration id=%s", message.get("id"))
+            logger.warning("Skipping message with invalid created_at during expiry migration id=%s", message.get("id"))
             continue
         selector = {"_id": message["_id"]} if message.get("_id") is not None else {
             "id": message.get("id"),
@@ -1617,7 +1592,7 @@ async def migrate_message_expirations() -> int:
             "conversation_id": message.get("conversation_id"),
         }
         result = await db.messages.update_one(
-            {**selector, "read_at": {"$nin": [None, ""]}, "expires_at": {"$exists": False}},
+            {**selector, "expires_at": {"$exists": False}},
             {"$set": {"expires_at": expires_at}},
         )
         migrated += result.modified_count
@@ -1769,7 +1744,9 @@ async def send_message(body: MessageCreate, request: Request):
         sender_id = auth_user["user_id"]
 
     msg_id = str(uuid.uuid4())
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    expires_at = now_dt + MESSAGE_RETENTION
 
     msg_doc = {
         "id": msg_id,
@@ -1784,11 +1761,15 @@ async def send_message(body: MessageCreate, request: Request):
         "duration": (audio_asset or {}).get("duration") or body.duration or 0.0,
         "created_at": now_iso,
         "read_at": None,
+        "expires_at": expires_at,
     }
 
     await db.messages.insert_one(msg_doc)
     if audio_asset:
-        await db.voice_assets.update_one({"id": audio_asset["id"], "message_id": None}, {"$set": {"message_id": msg_id}})
+        await db.voice_assets.update_one(
+            {"id": audio_asset["id"], "message_id": None},
+            {"$set": {"message_id": msg_id, "expires_at": expires_at}},
+        )
 
     # Update conversation's last message
     preview = body.text if body.message_type == "text" else "🎤 Audio Message / आवाज़ संदेश"
@@ -1957,8 +1938,8 @@ async def startup():
         logger.error("MongoDB is unavailable; backend startup aborted")
         raise RuntimeError("MongoDB is unavailable. Check MONGO_URL and database network access.") from exc
 
-    # Backfill only chat-message expiry state before enabling TTL. Unread messages
-    # have any accidental expiry removed and can therefore never be TTL-deleted.
+    # Backfill only chat-message expiry state before enabling TTL. Every message
+    # expires from its creation time, whether it was read or not.
     migrated_messages = await migrate_message_expirations()
     removed_voice_assets = await cleanup_expired_voice_assets()
     if migrated_messages or removed_voice_assets:
