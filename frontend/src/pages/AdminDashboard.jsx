@@ -15,7 +15,7 @@ import WorkerViewModal from "@/components/workerview/WorkerViewModal";
 import WorkerAvatar from "@/components/ui/WorkerAvatar";
 import AttendanceCalendar from "@/components/attendance/AttendanceCalendar";
 import SalarySlipModal from "@/components/salary/SalarySlipModal";
-import AudioPlayer from "@/components/chat/AudioPlayer";
+import MessageBubble from "@/components/chat/MessageBubble";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
 import useSmartChatScroll from "@/components/chat/useSmartChatScroll";
@@ -2134,7 +2134,7 @@ function MessagesSection({ workers, admin, onUnreadChange }) {
             </div>
 
             {/* Message Thread */}
-            <div ref={messageListRef} onScroll={handleMessageScroll} className="chat-thread flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
+            <div ref={messageListRef} onScroll={handleMessageScroll} className="chat-thread flex-1 overflow-y-auto p-3 sm:p-4">
               {messages.length === 0 && (
                 <div className="h-full flex items-center justify-center text-center text-slate-400 text-sm">
                   <div>
@@ -2145,31 +2145,15 @@ function MessagesSection({ workers, admin, onUnreadChange }) {
               )}
 
               {messages.map((m, index) => {
-                const isOwner = m.sender_type === "owner" && (!m.sender_id || m.sender_id === admin?.id);
-                const previous = messages[index - 1];
-                const showSender = index === 0 || previous?.sender_type !== m.sender_type || previous?.sender_id !== m.sender_id;
                 return (
                   <div key={m.id}>
                     {m.id === firstUnreadId && <div className="chat-new-divider" role="separator"><span>New Messages</span></div>}
-                    <div className={`flex flex-col ${isOwner ? "items-end" : "items-start"}`}>
-                      {showSender && <span className="text-[10px] text-slate-400 mb-1 px-1">
-                        {isOwner ? "आप (Owner)" : activeConv.worker.name}
-                      </span>}
-
-                      {m.message_type === "audio" ? (
-                        <AudioPlayer audioUrl={m.audio_url} duration={m.duration} own={isOwner} />
-                      ) : (
-                        <div className={`chat-bubble max-w-[82%] break-words rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
-                            isOwner ? "bg-teal-800 text-white rounded-br-none" : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
-                          }`}>
-                          {m.text}
-                        </div>
-                      )}
-                      <span className="min-h-[14px] text-[10px] leading-[14px] text-slate-400 mt-0.5 px-1 tabular-nums">
-                        {m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}
-                        {isOwner ? ` · ${m.read_at ? "Seen" : "Sent"}` : ""}
-                      </span>
-                    </div>
+                    <MessageBubble
+                      message={m}
+                      previousMessage={messages[index - 1]}
+                      currentActor={{ type: "owner", id: admin?.id }}
+                      receivedLabel={activeConv.worker.name}
+                    />
                   </div>
                 );
               })}
