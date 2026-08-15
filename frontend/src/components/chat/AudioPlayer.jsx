@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Play, Pause, Volume2, AlertCircle } from "lucide-react";
 import { API } from "@/lib/api";
 
-export default function AudioPlayer({ audioUrl, duration }) {
+export default function AudioPlayer({ audioUrl, duration, own = false }) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(duration || 0);
@@ -10,9 +10,10 @@ export default function AudioPlayer({ audioUrl, duration }) {
   const audioRef = useRef(null);
 
   // Construct full stream URL
-  const src = audioUrl.startsWith("http")
-    ? audioUrl
-    : `${API.replace(/\/api$/, "")}${audioUrl.startsWith("/") ? "" : "/"}${audioUrl}`;
+  const safeAudioUrl = String(audioUrl || "");
+  const src = safeAudioUrl.startsWith("http")
+    ? safeAudioUrl
+    : `${API.replace(/\/api$/, "")}${safeAudioUrl.startsWith("/") ? "" : "/"}${safeAudioUrl}`;
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -78,7 +79,7 @@ export default function AudioPlayer({ audioUrl, duration }) {
   }
 
   return (
-    <div className="flex items-center gap-3 bg-white/90 border border-slate-200 rounded-2xl px-3 py-2 shadow-sm w-[min(78vw,300px)] min-w-0">
+    <div className={`flex items-center gap-3 rounded-2xl px-3 py-2 shadow-sm w-[min(78vw,300px)] min-w-0 ${own ? "bg-teal-800 border border-teal-800 text-white" : "bg-white/90 border border-slate-200"}`}>
       <audio ref={audioRef} src={src} preload="metadata" crossOrigin="use-credentials" />
       <button
         type="button"
@@ -100,7 +101,7 @@ export default function AudioPlayer({ audioUrl, duration }) {
             className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-teal-800"
           />
         </div>
-        <div className="flex justify-between text-[11px] text-slate-500 font-mono mt-0.5">
+        <div className={`flex justify-between text-[11px] font-mono mt-0.5 ${own ? "text-teal-100" : "text-slate-500"}`}>
           <span>{formatTime(currentTime)}</span>
           <span>{formatTime(audioDuration)}</span>
         </div>

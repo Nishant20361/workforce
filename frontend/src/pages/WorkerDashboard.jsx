@@ -581,8 +581,9 @@ export default function WorkerDashboard() {
                   )}
 
                   {messages.map((m, index) => {
-                    const isWorker = m.sender_type === "worker";
-                    const showSender = index === 0 || messages[index - 1].sender_type !== m.sender_type;
+                    const isWorker = m.sender_type === "worker" && (!m.sender_id || m.sender_id === user?.id || m.sender_id === user?.user_id);
+                    const previous = messages[index - 1];
+                    const showSender = index === 0 || previous?.sender_type !== m.sender_type || previous?.sender_id !== m.sender_id;
                     return (
                       <div key={m.id}>
                         {m.id === firstUnreadId && <div className="chat-new-divider" role="separator"><span>New Messages</span></div>}
@@ -592,9 +593,9 @@ export default function WorkerDashboard() {
                           </span>}
 
                           {m.message_type === "audio" ? (
-                            <AudioPlayer audioUrl={m.audio_url} duration={m.duration} />
+                            <AudioPlayer audioUrl={m.audio_url} duration={m.duration} own={isWorker} />
                           ) : (
-                            <div className={`chat-bubble rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
+                            <div className={`chat-bubble max-w-[82%] break-words rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
                                 isWorker ? "bg-teal-800 text-white rounded-br-none" : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
                               }`}>
                               {m.text}
@@ -784,4 +785,3 @@ export default function WorkerDashboard() {
     </div>
   );
 }
-

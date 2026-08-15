@@ -254,7 +254,7 @@ export default function AdminDashboard() {
           {view === "attendance" && <AttendanceSection workers={workers} />}
           {view === "payments" && <PaymentsSection workers={workers} />}
           {view === "extra" && <ExtraSection workers={workers} />}
-          {view === "messages" && <MessagesSection workers={workers} onUnreadChange={loadUnreadMessages} />}
+          {view === "messages" && <MessagesSection workers={workers} admin={admin} onUnreadChange={loadUnreadMessages} />}
         </main>
       </div>
 
@@ -436,12 +436,43 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
   const [query, setQuery] = useState("");
   const [credentials, setCredentials] = useState(null);
   const [resettingPassword, setResettingPassword] = useState(false);
+  const [workTypes, setWorkTypes] = useState(WORK_TYPES);
+  const [newWorkType, setNewWorkType] = useState("");
+  const [addingWorkType, setAddingWorkType] = useState(false);
 
   // Profile Photo state
   const [selectedPhotoFile, setSelectedPhotoFile] = useState(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState("");
   const [photoRemoved, setPhotoRemoved] = useState(false);
   const photoInputRef = useRef(null);
+
+  const loadWorkTypes = useCallback(async () => {
+    try {
+      const { data } = await adminApi.get("/work-types");
+      if (Array.isArray(data)) setWorkTypes(data.map((item) => item.name));
+    } catch (e) {
+      toast.error(apiError(e));
+    }
+  }, []);
+
+  useEffect(() => { loadWorkTypes(); }, [loadWorkTypes]);
+
+  const addWorkType = async () => {
+    const name = newWorkType.trim();
+    if (!name) return;
+    setAddingWorkType(true);
+    try {
+      const { data } = await adminApi.post("/work-types", { name });
+      setWorkTypes((current) => [...current, data.name].sort((a, b) => a.localeCompare(b)));
+      setForm((current) => ({ ...current, work_type: data.name }));
+      setNewWorkType("");
+      toast.success("Work Type added");
+    } catch (e) {
+      toast.error(apiError(e));
+    } finally {
+      setAddingWorkType(false);
+    }
+  };
 
   const visibleWorkers = workers.filter((w) =>
     [w.name, w.mobile, w.work_type, w.email, w.login_id].some((v) =>
@@ -919,7 +950,7 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
               <div>
                 <Label className="text-xs font-semibold text-slate-700">Work Type / काम का प्रकार</Label>
                 <div data-testid="worker-type-select" className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1.5">
-                  {WORK_TYPES.map((type) => (
+                  {workTypes.map((type) => (
                     <button
                       key={type}
                       type="button"
@@ -934,6 +965,12 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
                       {type}
                     </button>
                   ))}
+                </div>
+                <div className="mt-3 flex flex-col sm:flex-row gap-2 max-w-md">
+                  <Input data-testid="new-work-type-input" value={newWorkType} onChange={(e) => setNewWorkType(e.target.value)} maxLength={50} placeholder="Add new work type, e.g. Salesman" className="rounded-xl min-w-0" />
+                  <Button data-testid="add-work-type-btn" type="button" onClick={addWorkType} disabled={addingWorkType || !newWorkType.trim()} variant="outline" className="rounded-xl shrink-0">
+                    {addingWorkType ? <Loader2 className="h-4 w-4 animate-spin" /> : "+ Add New Work Type"}
+                  </Button>
                 </div>
               </div>
 
@@ -1921,7 +1958,7 @@ function ExtraSection({ workers }) {
 }
 
 /* ---------------- 6. Messages / Chat Section ---------------- */
-function MessagesSection({ workers, onUnreadChange }) {
+function MessagesSection({ workers, admin, onUnreadChange }) {
   const [conversations, setConversations] = useState([]);
   const [activeConv, setActiveConv] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -2108,8 +2145,9 @@ function MessagesSection({ workers, onUnreadChange }) {
               )}
 
               {messages.map((m, index) => {
-                const isOwner = m.sender_type === "owner";
-                const showSender = index === 0 || messages[index - 1].sender_type !== m.sender_type;
+                const isOwner = m.sender_type === "owner" && (!m.sender_id || m.sender_id === admin?.id);
+                const previous = messages[index - 1];
+                const showSender = index === 0 || previous?.sender_type !== m.sender_type || previous?.sender_id !== m.sender_id;
                 return (
                   <div key={m.id}>
                     {m.id === firstUnreadId && <div className="chat-new-divider" role="separator"><span>New Messages</span></div>}
@@ -2119,9 +2157,9 @@ function MessagesSection({ workers, onUnreadChange }) {
                       </span>}
 
                       {m.message_type === "audio" ? (
-                        <AudioPlayer audioUrl={m.audio_url} duration={m.duration} />
+                        <AudioPlayer audioUrl={m.audio_url} duration={m.duration} own={isOwner} />
                       ) : (
-                        <div className={`chat-bubble rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
+                        <div className={`chat-bubble max-w-[82%] break-words rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
                             isOwner ? "bg-teal-800 text-white rounded-br-none" : "bg-white text-slate-900 border border-stone-200 rounded-bl-none"
                           }`}>
                           {m.text}

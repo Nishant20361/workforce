@@ -381,6 +381,33 @@ class WorkerStatusUpdate(BaseModel):
         return val
 
 
+class WorkTypeCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=50)
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Work Type name is required")
+        return value
+
+
+class WorkTypeUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=50)
+    is_active: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Work Type name is required")
+        return value
+
+
 class WorkerCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     mobile: str = Field(default="", max_length=20)
@@ -857,6 +884,95 @@ async def worker_change_password(body: WorkerChangePassword, worker: dict = Depe
     return {"message": "Password changed successfully / पासवर्ड सफलतापूर्वक बदल दिया गया"}
 
 
+# ---------------- Business Work Types (Admin Isolated) ----------------
+DEFAULT_WORK_TYPES = ("Driver", "Mason", "Helper", "Labour", "Technician", "Supervisor", "Electrician", "Plumber", "Painter")
+
+
+def normalize_work_type(name: str) -> str:
+    return " ".join((name or "").split()).casefold()
+
+
+async def ensure_default_work_types(business_id: str) -> None:
+    """Idempotently provide useful choices without touching worker records."""
+    now = datetime.now(timezone.utc).isoformat()
+    for name in DEFAULT_WORK_TYPES:
+        await db.work_types.update_one(
+            {"business_id": business_id, "normalized_name": normalize_work_type(name)},
+            {"$setOnInsert": {"id": str(uuid.uuid4()), "business_id": business_id, "name": name,
+                              "normalized_name": normalize_work_type(name), "is_active": True,
+                              "created_at": now, "updated_at": now}},
+            upsert=True,
+        )
+
+
+async def require_active_work_type(business_id: str, name: str) -> None:
+    await ensure_default_work_types(business_id)
+    work_type = await db.work_types.find_one({
+        "business_id": business_id, "normalized_name": normalize_work_type(name), "is_active": True,
+    })
+    if not work_type:
+        raise HTTPException(status_code=422, detail="Select an active Work Type or add a new one first")
+
+
+@api_router.get("/work-types")
+async def list_work_types(include_inactive: bool = False, admin: dict = Depends(get_current_admin)):
+    biz_id = admin["business_id"]
+    await ensure_default_work_types(biz_id)
+    query = {"business_id": biz_id}
+    if not include_inactive:
+        query["is_active"] = True
+    return await db.work_types.find(query, {"_id": 0}).sort("name", 1).to_list(200)
+
+
+@api_router.post("/work-types")
+async def create_work_type(body: WorkTypeCreate, admin: dict = Depends(get_current_admin)):
+    biz_id = admin["business_id"]
+    await ensure_default_work_types(biz_id)
+    normalized = normalize_work_type(body.name)
+    if await db.work_types.find_one({"business_id": biz_id, "normalized_name": normalized}):
+        raise HTTPException(status_code=409, detail="This Work Type already exists.")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": str(uuid.uuid4()), "business_id": biz_id, "name": body.name,
+           "normalized_name": normalized, "is_active": True, "created_at": now, "updated_at": now}
+    try:
+        await db.work_types.insert_one(doc)
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="This Work Type already exists.") from exc
+    return doc
+
+
+@api_router.put("/work-types/{work_type_id}")
+async def update_work_type(work_type_id: str, body: WorkTypeUpdate, admin: dict = Depends(get_current_admin)):
+    biz_id = admin["business_id"]
+    current = await db.work_types.find_one({"id": work_type_id, "business_id": biz_id})
+    if not current:
+        raise HTTPException(status_code=404, detail="Work Type not found")
+    update = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.name is not None:
+        normalized = normalize_work_type(body.name)
+        duplicate = await db.work_types.find_one({"business_id": biz_id, "normalized_name": normalized, "id": {"$ne": work_type_id}})
+        if duplicate:
+            raise HTTPException(status_code=409, detail="This Work Type already exists.")
+        update.update({"name": body.name, "normalized_name": normalized})
+    if body.is_active is not None:
+        update["is_active"] = body.is_active
+    await db.work_types.update_one({"id": work_type_id, "business_id": biz_id}, {"$set": update})
+    return await db.work_types.find_one({"id": work_type_id, "business_id": biz_id}, {"_id": 0})
+
+
+@api_router.delete("/work-types/{work_type_id}")
+async def delete_work_type(work_type_id: str, admin: dict = Depends(get_current_admin)):
+    biz_id = admin["business_id"]
+    current = await db.work_types.find_one({"id": work_type_id, "business_id": biz_id})
+    if not current:
+        raise HTTPException(status_code=404, detail="Work Type not found")
+    assigned = await db.workers.count_documents({"business_id": biz_id, "work_type": {"$regex": f"^{re.escape(current['name'])}$", "$options": "i"}})
+    if assigned:
+        raise HTTPException(status_code=409, detail=f"Cannot delete this Work Type because {assigned} workers are using it. Deactivate it instead.")
+    await db.work_types.delete_one({"id": work_type_id, "business_id": biz_id})
+    return {"ok": True}
+
+
 # ---------------- Worker CRUD & Management (Admin Isolated) ----------------
 @api_router.get("/workers")
 async def list_workers(
@@ -884,6 +1000,7 @@ async def list_workers(
 async def create_worker(body: WorkerCreate, admin: dict = Depends(get_current_admin)):
     biz_id = admin["business_id"]
     doc = body.model_dump()
+    await require_active_work_type(biz_id, doc["work_type"])
     doc["email"] = (doc.get("email") or "").strip().lower()
     doc["status"] = (doc.get("status") or "ACTIVE").strip().upper()
 
@@ -950,6 +1067,8 @@ async def update_worker(worker_id: str, body: WorkerUpdate, admin: dict = Depend
         raise HTTPException(status_code=404, detail="Worker not found")
 
     update_data = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "work_type" in update_data and normalize_work_type(update_data["work_type"]) != normalize_work_type(current_worker.get("work_type", "")):
+        await require_active_work_type(biz_id, update_data["work_type"])
     if "email" in update_data:
         update_data["email"] = (update_data["email"] or "").strip().lower()
     if "status" in update_data:
@@ -2379,6 +2498,8 @@ async def startup():
                                       partialFilterExpression={"email": {"$type": "string", "$gt": ""}})
         await db.workers.create_index([("business_id", ASCENDING), ("login_id", ASCENDING)], unique=True,
                                       partialFilterExpression={"login_id": {"$type": "string", "$gt": ""}})
+        await db.work_types.create_index([("business_id", ASCENDING), ("normalized_name", ASCENDING)], unique=True)
+        await db.work_types.create_index([("business_id", ASCENDING), ("is_active", ASCENDING), ("name", ASCENDING)])
         await db.attendance.create_index([("business_id", ASCENDING), ("worker_id", ASCENDING), ("date", ASCENDING)], unique=True)
         await db.payments.create_index([("business_id", ASCENDING), ("worker_id", ASCENDING), ("date", ASCENDING)])
         await db.extra_work.create_index([("business_id", ASCENDING), ("worker_id", ASCENDING), ("date", ASCENDING)])
