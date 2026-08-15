@@ -12,8 +12,8 @@ export function Dialog({ open, onOpenChange, children }) {
   );
 }
 
-export function DialogContent({ children, className = "" }) {
-  return <div className={`bg-white rounded-xl border border-slate-200 shadow p-4 ${className}`}>{children}</div>;
+export function DialogContent({ children, className = "", ...props }) {
+  return <div className={`bg-white rounded-xl border border-slate-200 shadow p-4 ${className}`} {...props}>{children}</div>;
 }
 export function DialogHeader({ children }) { return <div className="mb-2">{children}</div>; }
 export function DialogTitle({ children }) { return <h3 className="text-lg font-semibold">{children}</h3>; }

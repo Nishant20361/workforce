@@ -151,3 +151,89 @@ class PayrollService:
             "extra_total": float(extra_total_all_time),
             "total_earnings": float(money(paid_all_time + extra_total_all_time)),
         }
+
+    @staticmethod
+    def calculate_worker_month_attendance(
+        worker: Dict[str, Any],
+        attendance_records: List[Dict[str, Any]],
+        year: int,
+        month: int,
+        today_date_str: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Calculates daily status and authoritative monthly summary for worker calendar view.
+        Strictly excludes future dates and pre-employment dates from unrecorded/absent metrics.
+        """
+        from backend.services.timezone import get_today_date
+
+        if not today_date_str:
+            today_date_str = get_today_date()
+
+        days_in_month = calendar.monthrange(year, month)[1]
+        first_weekday = calendar.monthrange(year, month)[0]  # 0 is Monday, 6 is Sunday
+
+        records_by_date = {a.get("date"): a for a in attendance_records if a.get("date")}
+        joining_date = worker.get("joining_date") or "1970-01-01"
+
+        days = []
+        present_count = 0
+        half_day_count = 0
+        absent_count = 0
+        not_marked_count = 0
+        eligible_days_count = 0
+
+        for d in range(1, days_in_month + 1):
+            date_str = f"{year:04d}-{month:02d}-{d:02d}"
+            is_future = date_str > today_date_str
+            is_pre_joining = date_str < joining_date
+            is_today = date_str == today_date_str
+
+            rec = records_by_date.get(date_str)
+            raw_status = rec.get("status") if rec else None
+
+            if raw_status == "Present":
+                present_count += 1
+                eligible_days_count += 1
+            elif raw_status == "Half Day":
+                half_day_count += 1
+                eligible_days_count += 1
+            elif raw_status == "Absent":
+                absent_count += 1
+                eligible_days_count += 1
+            else:
+                if not is_future and not is_pre_joining:
+                    not_marked_count += 1
+                    eligible_days_count += 1
+
+            days.append({
+                "date": date_str,
+                "day": d,
+                "status": raw_status,
+                "is_future": is_future,
+                "is_pre_joining": is_pre_joining,
+                "is_today": is_today,
+            })
+
+        earned_units = Decimal(str(present_count)) + (Decimal(str(half_day_count)) * Decimal("0.5"))
+        if eligible_days_count > 0:
+            rate_val = round(float((earned_units / Decimal(str(eligible_days_count))) * Decimal("100")), 1)
+        else:
+            rate_val = 0.0
+
+        return {
+            "year": year,
+            "month": month,
+            "days_in_month": days_in_month,
+            "first_weekday": first_weekday,
+            "summary": {
+                "present": present_count,
+                "half_day": half_day_count,
+                "absent": absent_count,
+                "not_marked": not_marked_count,
+                "eligible_days": eligible_days_count,
+                "earned_units": float(earned_units),
+                "attendance_rate": rate_val,
+            },
+            "days": days,
+        }
+

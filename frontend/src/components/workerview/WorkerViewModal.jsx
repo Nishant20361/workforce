@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import WorkerAvatar from "@/components/ui/WorkerAvatar";
+import AttendanceCalendar from "@/components/attendance/AttendanceCalendar";
+import SalarySlipModal from "@/components/salary/SalarySlipModal";
 import { adminApi, apiError, money } from "@/lib/api";
 import {
-  HardHat,
   CalendarCheck,
   IndianRupee,
   TrendingUp,
@@ -14,7 +16,12 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
-  HelpCircle,
+  Phone,
+  Calendar,
+  Briefcase,
+  ShieldCheck,
+  IdCard,
+  FileText,
 } from "lucide-react";
 
 const statusStyle = {
@@ -33,6 +40,8 @@ export default function WorkerViewModal({ workerId, open, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [modalTab, setModalTab] = useState("calendar"); // "calendar" or "finance"
+  const [salarySlipOpen, setSalarySlipOpen] = useState(false);
 
   useEffect(() => {
     if (!open || !workerId) return;
@@ -58,53 +67,110 @@ export default function WorkerViewModal({ workerId, open, onClose }) {
       <DialogContent className="w-[calc(100%_-_1.5rem)] max-w-3xl max-h-[92vh] overflow-y-auto rounded-3xl p-0 gap-0 border-0 shadow-2xl bg-[#f8f7f2]">
         {/* Header with clean Exit */}
         <div className="bg-[#102f2c] text-white p-6 sm:p-8 rounded-t-3xl relative">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="h-12 w-12 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-bold text-xl shadow-md">
-                <HardHat className="h-6 w-6" />
-              </div>
-              <div>
-                <span className="text-xs font-bold uppercase tracking-widest text-teal-200 block">
-                  कर्मचारी का हिसाब / Worker Account
-                </span>
-                <h1 className="font-display text-2xl sm:text-3xl font-extrabold mt-0.5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-4 min-w-0">
+              <WorkerAvatar
+                name={data?.worker?.name || ""}
+                photoUrl={data?.worker?.profile_photo_url || ""}
+                size="xl"
+                className="shadow-lg border-2 border-white/20 ring-2 ring-amber-400/30"
+              />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-extrabold uppercase tracking-widest text-teal-300 block">
+                    कर्मचारी प्रोफाइल / Worker Profile
+                  </span>
+                  {data?.worker?.login_id && (
+                    <span className="bg-amber-400/20 text-amber-300 border border-amber-400/40 text-[11px] font-mono font-bold px-2 py-0.5 rounded-md">
+                      {data.worker.login_id}
+                    </span>
+                  )}
+                </div>
+                <h1 className="font-display text-2xl sm:text-3xl font-extrabold mt-0.5 truncate">
                   {data?.worker?.name || "लोड हो रहा है..."}
                 </h1>
+                <p className="text-xs text-teal-200 mt-0.5 font-medium flex items-center gap-2">
+                  <span>{data?.worker?.work_type}</span>
+                  {data?.worker?.status && (
+                    <span className={`inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full ${data.worker.status === 'INACTIVE' ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                      {data.worker.status === 'INACTIVE' ? 'निष्क्रिय / Inactive' : 'सक्रिय / Active'}
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
 
-            <Button
-              onClick={onClose}
-              variant="outline"
-              size="sm"
-              className="bg-white/10 hover:bg-white/20 text-white border-white/20 rounded-xl"
-            >
-              <ArrowLeft className="h-4 w-4 mr-1.5" /> वापस / Close
-            </Button>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                type="button"
+                data-testid="worker-modal-salary-slip-btn"
+                onClick={() => setSalarySlipOpen(true)}
+                size="sm"
+                className="bg-amber-400 hover:bg-amber-500 text-slate-950 rounded-xl font-bold text-xs shadow-sm"
+              >
+                <FileText className="h-4 w-4 mr-1.5" /> वेतन पर्ची (PDF)
+              </Button>
+              <Button
+                onClick={onClose}
+                variant="outline"
+                size="sm"
+                className="bg-white/10 hover:bg-white/20 text-white border-white/20 rounded-xl"
+              >
+                <ArrowLeft className="h-4 w-4 mr-1.5" /> वापस / Close
+              </Button>
+            </div>
           </div>
 
           {data && (
-            <div className="flex flex-wrap gap-4 mt-6 text-sm text-teal-100">
-              <span className="bg-white/10 px-3 py-1 rounded-full">
-                काम: <strong>{data.worker.work_type}</strong>
+            <div className="flex flex-wrap gap-2.5 mt-6 text-xs text-teal-100">
+              <span className="bg-white/10 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+                <Briefcase className="h-3.5 w-3.5 text-amber-300" /> काम: <strong>{data.worker.work_type}</strong>
               </span>
-              <span className="bg-white/10 px-3 py-1 rounded-full">
-                मोबाइल: <strong>{data.worker.mobile}</strong>
+              <span className="bg-white/10 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+                <Phone className="h-3.5 w-3.5 text-amber-300" /> मोबाइल: <strong className="font-mono">{data.worker.mobile || "—"}</strong>
               </span>
-              <span className="bg-white/10 px-3 py-1 rounded-full">
-                शामिल होने की तारीख: <strong>{data.worker.joining_date}</strong>
+              <span className="bg-white/10 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+                <Calendar className="h-3.5 w-3.5 text-amber-300" /> शामिल: <strong>{data.worker.joining_date}</strong>
               </span>
               <span
-                className={`px-3 py-1 rounded-full font-semibold ${
+                className={`px-3 py-1.5 rounded-xl font-semibold flex items-center gap-1.5 ${
                   data.connected
-                    ? "bg-emerald-400/20 text-emerald-300"
-                    : "bg-amber-400/20 text-amber-300"
+                    ? "bg-emerald-400/20 text-emerald-300 border border-emerald-400/30"
+                    : "bg-white/10 text-stone-300"
                 }`}
               >
-                ऐप: {data.connected ? "जुड़ा हुआ (Connected)" : "नहीं जुड़ा (No App)"}
+                <ShieldCheck className="h-3.5 w-3.5" /> पोर्टल: {data.connected ? "जुड़ा हुआ (App Enabled)" : "नहीं जुड़ा (No App)"}
               </span>
             </div>
           )}
+
+          {/* Sub-tab navigation */}
+          <div className="flex items-center gap-2 mt-5 border-t border-white/10 pt-4">
+            <button
+              type="button"
+              onClick={() => setModalTab("calendar")}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                modalTab === "calendar"
+                  ? "bg-amber-400 text-slate-950 shadow-sm"
+                  : "bg-white/10 text-teal-200 hover:bg-white/20"
+              }`}
+            >
+              <CalendarCheck className="h-3.5 w-3.5 inline mr-1.5" />
+              मासिक हाज़िरी कैलेंडर (Calendar)
+            </button>
+            <button
+              type="button"
+              onClick={() => setModalTab("finance")}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                modalTab === "finance"
+                  ? "bg-amber-400 text-slate-950 shadow-sm"
+                  : "bg-white/10 text-teal-200 hover:bg-white/20"
+              }`}
+            >
+              <Wallet className="h-3.5 w-3.5 inline mr-1.5" />
+              हिसाब व रिकॉर्ड (Finance & Logs)
+            </button>
+          </div>
         </div>
 
         {/* Content Body */}
@@ -122,7 +188,15 @@ export default function WorkerViewModal({ workerId, open, onClose }) {
             </div>
           )}
 
-          {data && !loading && (
+          {data && !loading && modalTab === "calendar" && (
+            <AttendanceCalendar
+              workerId={workerId}
+              worker={data.worker}
+              isAdmin={true}
+            />
+          )}
+
+          {data && !loading && modalTab === "finance" && (
             <>
               {/* Highlight Financial Summary */}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
@@ -255,6 +329,16 @@ export default function WorkerViewModal({ workerId, open, onClose }) {
           )}
         </div>
       </DialogContent>
+
+      {/* Salary Slip Modal */}
+      <SalarySlipModal
+        open={salarySlipOpen}
+        onClose={() => setSalarySlipOpen(false)}
+        workerId={workerId}
+        worker={data?.worker}
+        isAdmin={true}
+      />
     </Dialog>
   );
 }
+

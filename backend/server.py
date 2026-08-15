@@ -5,7 +5,7 @@ import os
 ROOT_DIR = Path(__file__).resolve().parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -36,19 +36,29 @@ from backend.services.timezone import (
     BUSINESS_TIMEZONE_NAME,
 )
 from backend.services.payroll import PayrollService
-from backend.services.storage import VoiceStorage
+from backend.services.storage import VoiceStorage, ProfilePhotoStorage, PHOTO_UPLOAD_DIR
 from backend.services.email import email_service
+from backend.services.salary_slip_pdf import generate_salary_slip_pdf, sanitize_filename
 from backend.services import push
 
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL')
 if not mongo_url:
     raise RuntimeError('MONGO_URL environment variable is required. See backend/.env.example')
-client = AsyncIOMotorClient(
-    mongo_url,
-    serverSelectionTimeoutMS=int(os.environ.get("MONGO_SERVER_SELECTION_TIMEOUT_MS", "5000")),
-    connectTimeoutMS=int(os.environ.get("MONGO_CONNECT_TIMEOUT_MS", "5000")),
-)
+try:
+    import certifi
+    _ca_file = certifi.where()
+except Exception:
+    _ca_file = None
+
+_client_kwargs: dict[str, Any] = {
+    "serverSelectionTimeoutMS": int(os.environ.get("MONGO_SERVER_SELECTION_TIMEOUT_MS", "5000")),
+    "connectTimeoutMS": int(os.environ.get("MONGO_CONNECT_TIMEOUT_MS", "5000")),
+}
+if _ca_file and ("mongodb+srv://" in mongo_url or "ssl=true" in mongo_url.lower() or "tls=true" in mongo_url.lower()):
+    _client_kwargs["tlsCAFile"] = _ca_file
+
+client = AsyncIOMotorClient(mongo_url, **_client_kwargs)
 _db_name = os.environ.get('DB_NAME')
 if not _db_name:
     raise RuntimeError('DB_NAME environment variable is required. See backend/.env.example')
@@ -66,6 +76,7 @@ COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "none" if IS_PRODUCTION else
 SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE_SECONDS", "5184000"))
 MESSAGE_RETENTION = timedelta(hours=48)
 voice_storage = VoiceStorage()
+photo_storage = ProfilePhotoStorage()
 
 app = FastAPI(title="WorkForce API")
 api_router = APIRouter(prefix="/api")
@@ -381,6 +392,10 @@ class WorkerCreate(BaseModel):
     portal_enabled: bool = True
     login_id: Optional[str] = ""
     password: Optional[str] = ""
+    profile_photo_url: Optional[str] = None
+    profile_photo_asset_id: Optional[str] = None
+    profile_photo_provider: Optional[str] = None
+    profile_photo_updated_at: Optional[str] = None
 
     @field_validator("name", "mobile", "work_type")
     @classmethod
@@ -429,6 +444,10 @@ class WorkerUpdate(BaseModel):
     portal_enabled: Optional[bool] = None
     login_id: Optional[str] = None
     password: Optional[str] = None
+    profile_photo_url: Optional[str] = None
+    profile_photo_asset_id: Optional[str] = None
+    profile_photo_provider: Optional[str] = None
+    profile_photo_updated_at: Optional[str] = None
 
     @field_validator("joining_date")
     @classmethod
@@ -1051,12 +1070,111 @@ async def reset_worker_password_by_admin(
     }
 
 
+@api_router.get("/workers/photos/{filename}")
+async def serve_worker_photo(filename: str):
+    """Safely serves locally stored profile photos."""
+    safe_name = os.path.basename(filename)
+    if not safe_name or safe_name != filename:
+        raise HTTPException(status_code=400, detail="Invalid photo filename")
+    photo_path = PHOTO_UPLOAD_DIR / safe_name
+    if not photo_path.is_file():
+        raise HTTPException(status_code=404, detail="Profile photo not found")
+    media_type = "image/jpeg"
+    if safe_name.lower().endswith(".png"):
+        media_type = "image/png"
+    elif safe_name.lower().endswith(".webp"):
+        media_type = "image/webp"
+    return FileResponse(
+        path=photo_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@api_router.post("/workers/{worker_id}/profile-photo")
+async def upload_worker_profile_photo(
+    worker_id: str,
+    file: UploadFile = File(...),
+    admin: dict = Depends(get_current_admin),
+):
+    """Uploads/updates a profile photo for a worker within the admin's business."""
+    biz_id = admin["business_id"]
+    worker = await db.workers.find_one({"id": worker_id, "business_id": biz_id})
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    # If the worker already has a photo asset, delete it safely
+    old_asset = worker.get("profile_photo_asset_id")
+    if old_asset:
+        await photo_storage.delete_profile_photo(worker)
+
+    upload_result = await photo_storage.upload_profile_photo(file, worker_id=worker_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    update_data = {
+        "profile_photo_url": upload_result["secure_url"],
+        "profile_photo_asset_id": upload_result["public_id"],
+        "profile_photo_provider": upload_result["storage_provider"],
+        "profile_photo_updated_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+    await db.workers.update_one(
+        {"id": worker_id, "business_id": biz_id},
+        {"$set": update_data},
+    )
+
+    updated_worker = await db.workers.find_one(
+        {"id": worker_id, "business_id": biz_id},
+        {"_id": 0, "password_hash": 0},
+    )
+    return clean_worker_document(updated_worker)
+
+
+@api_router.delete("/workers/{worker_id}/profile-photo")
+async def remove_worker_profile_photo(
+    worker_id: str,
+    admin: dict = Depends(get_current_admin),
+):
+    """Removes a worker's profile photo while preserving history and records."""
+    biz_id = admin["business_id"]
+    worker = await db.workers.find_one({"id": worker_id, "business_id": biz_id})
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    if worker.get("profile_photo_asset_id"):
+        await photo_storage.delete_profile_photo(worker)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.workers.update_one(
+        {"id": worker_id, "business_id": biz_id},
+        {
+            "$unset": {
+                "profile_photo_url": "",
+                "profile_photo_asset_id": "",
+                "profile_photo_provider": "",
+                "profile_photo_updated_at": "",
+            },
+            "$set": {"updated_at": now_iso},
+        },
+    )
+
+    updated_worker = await db.workers.find_one(
+        {"id": worker_id, "business_id": biz_id},
+        {"_id": 0, "password_hash": 0},
+    )
+    return clean_worker_document(updated_worker)
+
+
 @api_router.delete("/workers/{worker_id}")
 async def delete_worker(worker_id: str, admin: dict = Depends(get_current_admin)):
     biz_id = admin["business_id"]
     worker = await db.workers.find_one({"id": worker_id, "business_id": biz_id})
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
+
+    if worker.get("profile_photo_asset_id"):
+        await photo_storage.delete_profile_photo(worker)
 
     await db.workers.delete_one({"id": worker_id, "business_id": biz_id})
     await db.worker_sessions.delete_many({"worker_id": worker_id})
@@ -1116,6 +1234,121 @@ async def get_attendance(
     if worker_id:
         q["worker_id"] = worker_id
     return await db.attendance.find(q, {"_id": 0}).sort("date", -1).to_list(5000)
+
+
+@api_router.get("/workers/{worker_id}/attendance/month")
+async def get_worker_month_attendance(
+    worker_id: str,
+    year: int = Query(..., ge=1900, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    admin: dict = Depends(get_current_admin),
+):
+    """
+    Returns monthly attendance calendar data and authoritative summary for a worker.
+    Strictly scoped to the authenticated admin's business.
+    """
+    biz_id = admin["business_id"]
+    worker = await db.workers.find_one({"id": worker_id, "business_id": biz_id}, {"_id": 0, "password_hash": 0})
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found in your workspace")
+
+    prefix = f"{year:04d}-{month:02d}-"
+    attendance_records = await db.attendance.find(
+        {"business_id": biz_id, "worker_id": worker_id, "date": {"$regex": f"^{prefix}"}},
+        {"_id": 0},
+    ).to_list(100)
+
+    result = PayrollService.calculate_worker_month_attendance(
+        worker=worker,
+        attendance_records=attendance_records,
+        year=year,
+        month=month,
+        today_date_str=get_today_date(),
+    )
+    result["worker"] = clean_worker_document(worker)
+    return result
+
+
+@api_router.get("/workers/{worker_id}/salary-slip")
+async def get_worker_salary_slip_pdf(
+    worker_id: str,
+    year: int = Query(..., ge=1900, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    admin: dict = Depends(get_current_admin),
+):
+    """
+    Generates and streams an authoritative Salary Slip PDF for a worker.
+    Strictly scoped to the authenticated admin's business.
+    """
+    biz_id = admin["business_id"]
+    worker = await db.workers.find_one({"id": worker_id, "business_id": biz_id}, {"_id": 0, "password_hash": 0})
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found in your workspace")
+
+    business = await db.businesses.find_one({"id": biz_id}, {"_id": 0})
+
+    prefix = f"{year:04d}-{month:02d}-"
+    m_start = f"{prefix}01"
+    if month == 12:
+        m_end = f"{year + 1:04d}-01-01"
+    else:
+        m_end = f"{year:04d}-{month + 1:02d}-01"
+
+    attendance_records = await db.attendance.find(
+        {"business_id": biz_id, "worker_id": worker_id, "date": {"$regex": f"^{prefix}"}},
+        {"_id": 0},
+    ).sort("date", 1).to_list(100)
+
+    payments = await db.payments.find(
+        {"business_id": biz_id, "worker_id": worker_id, "deleted_at": None, "date": {"$gte": m_start, "$lt": m_end}},
+        {"_id": 0},
+    ).sort("date", 1).to_list(500)
+
+    extra_work = await db.extra_work.find(
+        {"business_id": biz_id, "worker_id": worker_id, "deleted_at": None, "date": {"$gte": m_start, "$lt": m_end}},
+        {"_id": 0},
+    ).sort("date", 1).to_list(500)
+
+    summary = PayrollService.calculate_worker_month_summary(
+        worker=worker,
+        attendance_list=attendance_records,
+        payments_list=payments,
+        extra_work_list=extra_work,
+        date_str=m_start,
+    )
+
+    attendance_summary = PayrollService.calculate_worker_month_attendance(
+        worker=worker,
+        attendance_records=attendance_records,
+        year=year,
+        month=month,
+        today_date_str=get_today_date(),
+    )
+
+    pdf_bytes = generate_salary_slip_pdf(
+        worker=worker,
+        business=business,
+        summary=summary,
+        attendance_summary=attendance_summary.get("summary", {}),
+        year=year,
+        month=month,
+        recent_payments=payments,
+    )
+
+    month_names = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+    m_name = month_names[month - 1] if 1 <= month <= 12 else str(month)
+    safe_worker_name = sanitize_filename(worker.get("name", "Worker"))
+    filename = f"WorkForce_Salary_Slip_{safe_worker_name}_{m_name}_{year}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store, private",
+        },
+    )
+
 
 
 # ---------------- Payments & Advances (Admin - Business Isolated) ----------------
@@ -1279,14 +1512,15 @@ async def admin_stats(admin: dict = Depends(get_current_admin)):
     workers = await db.workers.find({"business_id": biz_id}, {"_id": 0}).to_list(1000)
     today = get_today_date()
     yesterday = get_yesterday_date()
-
-    att_today = await db.attendance.find({"business_id": biz_id, "date": today}, {"_id": 0}).to_list(5000)
+    
     m_start, m_end, _, _ = get_month_bounds(today)
-    
-    payments = await db.payments.find({"business_id": biz_id, "deleted_at": None}, {"_id": 0}).to_list(10000)
+    attendance, payments, extra_works = await asyncio.gather(
+        db.attendance.find({"business_id": biz_id, "date": {"$gte": m_start, "$lt": m_end}}, {"_id": 0}).to_list(50000),
+        db.payments.find({"business_id": biz_id, "deleted_at": None}, {"_id": 0}).to_list(10000),
+        db.extra_work.find({"business_id": biz_id, "deleted_at": None}, {"_id": 0}).to_list(10000),
+    )
+    att_today = [item for item in attendance if item.get("date") == today]
     month_payments = [p for p in payments if m_start <= p.get("date", "") < m_end]
-    
-    extra_works = await db.extra_work.find({"business_id": biz_id, "deleted_at": None}, {"_id": 0}).to_list(10000)
     month_extra = [e for e in extra_works if m_start <= e.get("date", "") < m_end]
 
     total_monthly_salary = sum(float(w.get("salary", 0) or 0) for w in workers)
@@ -1297,20 +1531,71 @@ async def admin_stats(admin: dict = Depends(get_current_admin)):
     marked_workers = {a["worker_id"] for a in att_today}
     not_marked = len([w for w in workers if w["id"] not in marked_workers])
 
-    # Calculate aggregate salary earned this month across all workers
+    attendance_by_worker: dict[str, list[dict]] = defaultdict(list)
+    payments_by_worker: dict[str, list[dict]] = defaultdict(list)
+    extra_work_by_worker: dict[str, list[dict]] = defaultdict(list)
+    for item in attendance:
+        attendance_by_worker[item.get("worker_id", "")].append(item)
+    for item in payments:
+        payments_by_worker[item.get("worker_id", "")].append(item)
+    for item in extra_works:
+        extra_work_by_worker[item.get("worker_id", "")].append(item)
+
+    # Reuse the canonical payroll service with batched, tenant-scoped records.
     earned_salary_month = 0.0
     for w in workers:
-        w_att = await db.attendance.find({"business_id": biz_id, "worker_id": w["id"]}, {"_id": 0}).to_list(5000)
-        s = PayrollService.calculate_worker_month_summary(w, w_att, payments, extra_works, date_str=today)
+        s = PayrollService.calculate_worker_month_summary(
+            w,
+            attendance_by_worker.get(w["id"], []),
+            payments_by_worker.get(w["id"], []),
+            extra_work_by_worker.get(w["id"], []),
+            date_str=today,
+        )
         earned_salary_month += s["earned_salary"]
 
     salary_paid_month = sum(float(p.get("amount", 0)) for p in month_payments if p.get("type", "SALARY_PAYMENT") == "SALARY_PAYMENT")
     advances_month = sum(float(p.get("amount", 0)) for p in month_payments if p.get("type") == "ADVANCE")
     extra_work_paid_month = sum(float(p.get("amount", 0)) for p in month_payments if p.get("type") == "EXTRA_WORK_PAYMENT")
-    total_paid_month = salary_paid_month + advances_month + extra_work_paid_month
+    adjustments_month = sum(float(p.get("amount", 0)) for p in month_payments if p.get("type") == "ADJUSTMENT")
+    total_paid_month = salary_paid_month + advances_month + extra_work_paid_month + adjustments_month
     extra_earned_month = sum(float(e.get("amount", 0)) for e in month_extra)
     gross_earned_month = earned_salary_month + extra_earned_month
     remaining_payable = max(0.0, gross_earned_month - total_paid_month)
+    today_payments = sum(float(p.get("amount", 0) or 0) for p in month_payments if p.get("date") == today)
+
+    month_trend = {}
+    for item in attendance:
+        day = item.get("date")
+        if not day:
+            continue
+        point = month_trend.setdefault(day, {"date": day, "present": 0, "absent": 0, "half_day": 0})
+        if item.get("status") == "Present":
+            point["present"] += 1
+        elif item.get("status") == "Absent":
+            point["absent"] += 1
+        elif item.get("status") == "Half Day":
+            point["half_day"] += 1
+
+    worker_names = {worker["id"]: worker.get("name", "Worker") for worker in workers}
+    activity = []
+    for item in att_today:
+        activity.append({
+            "kind": "attendance", "worker_name": worker_names.get(item.get("worker_id"), "Worker"),
+            "status": item.get("status"), "date": item.get("date"), "time": item.get("updated_at") or item.get("date"),
+        })
+    for item in month_payments:
+        activity.append({
+            "kind": "payment", "worker_name": worker_names.get(item.get("worker_id"), "Worker"),
+            "amount": float(item.get("amount", 0) or 0), "payment_type": item.get("type", "SALARY_PAYMENT"),
+            "date": item.get("date"), "time": item.get("updated_at") or item.get("created_at") or item.get("date"),
+        })
+    for item in month_extra:
+        activity.append({
+            "kind": "extra_work", "worker_name": worker_names.get(item.get("worker_id"), "Worker"),
+            "amount": float(item.get("amount", 0) or 0), "description": item.get("description", "Extra work"),
+            "date": item.get("date"), "time": item.get("created_at") or item.get("date"),
+        })
+    activity.sort(key=lambda item: item.get("time") or "", reverse=True)
 
     return {
         "total_workers": len(workers),
@@ -1325,9 +1610,16 @@ async def admin_stats(admin: dict = Depends(get_current_admin)):
         "gross_earned_month": round(gross_earned_month, 2),
         "paid_this_month": round(salary_paid_month, 2),
         "advances_this_month": round(advances_month, 2),
+        "adjustments_this_month": round(adjustments_month, 2),
         "total_paid_month": round(total_paid_month, 2),
         "remaining_this_month": round(remaining_payable, 2),
         "remaining_payable": round(remaining_payable, 2),
+        "today_payments": round(today_payments, 2),
+        "payment_count_this_month": len(month_payments),
+        "extra_work_paid_this_month": round(extra_work_paid_month, 2),
+        "attendance_rate": round(((present + (half * 0.5)) / len(workers) * 100) if workers else 0, 1),
+        "monthly_attendance": [month_trend[key] for key in sorted(month_trend)],
+        "recent_activity": activity[:8],
     }
 
 
@@ -1363,6 +1655,128 @@ async def worker_self_data(user: dict = Depends(get_current_worker)):
         "extra_work": extra,
         "summary": summary,
     }
+
+
+@api_router.get("/worker/me/attendance/month")
+async def get_worker_self_month_attendance(
+    year: int = Query(..., ge=1900, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    user: dict = Depends(get_current_worker),
+):
+    """
+    Returns monthly attendance calendar data for the authenticated worker.
+    Identity and business isolation are derived strictly from the session.
+    """
+    biz_id = user["business_id"]
+    worker_id = user["worker_id"]
+    worker = await db.workers.find_one({"id": worker_id, "business_id": biz_id}, {"_id": 0, "password_hash": 0})
+    if not worker:
+        raise HTTPException(
+            status_code=404,
+            detail="No worker profile linked to your account. Ask your employer / admin to enable portal access."
+        )
+
+    prefix = f"{year:04d}-{month:02d}-"
+    attendance_records = await db.attendance.find(
+        {"business_id": biz_id, "worker_id": worker_id, "date": {"$regex": f"^{prefix}"}},
+        {"_id": 0},
+    ).to_list(100)
+
+    result = PayrollService.calculate_worker_month_attendance(
+        worker=worker,
+        attendance_records=attendance_records,
+        year=year,
+        month=month,
+        today_date_str=get_today_date(),
+    )
+    result["worker"] = clean_worker_document(worker)
+    return result
+
+
+@api_router.get("/worker/me/salary-slip")
+async def get_worker_self_salary_slip_pdf(
+    year: int = Query(..., ge=1900, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    user: dict = Depends(get_current_worker),
+):
+    """
+    Generates and streams an authoritative Salary Slip PDF for the authenticated worker.
+    Worker identity and business scoping are derived strictly from the verified session.
+    """
+    biz_id = user["business_id"]
+    worker_id = user["worker_id"]
+    worker = await db.workers.find_one({"id": worker_id, "business_id": biz_id}, {"_id": 0, "password_hash": 0})
+    if not worker:
+        raise HTTPException(
+            status_code=404,
+            detail="No worker profile linked to your account. Ask your employer / admin to enable portal access."
+        )
+
+    business = await db.businesses.find_one({"id": biz_id}, {"_id": 0})
+
+    prefix = f"{year:04d}-{month:02d}-"
+    m_start = f"{prefix}01"
+    if month == 12:
+        m_end = f"{year + 1:04d}-01-01"
+    else:
+        m_end = f"{year:04d}-{month + 1:02d}-01"
+
+    attendance_records = await db.attendance.find(
+        {"business_id": biz_id, "worker_id": worker_id, "date": {"$regex": f"^{prefix}"}},
+        {"_id": 0},
+    ).sort("date", 1).to_list(100)
+
+    payments = await db.payments.find(
+        {"business_id": biz_id, "worker_id": worker_id, "deleted_at": None, "date": {"$gte": m_start, "$lt": m_end}},
+        {"_id": 0},
+    ).sort("date", 1).to_list(500)
+
+    extra_work = await db.extra_work.find(
+        {"business_id": biz_id, "worker_id": worker_id, "deleted_at": None, "date": {"$gte": m_start, "$lt": m_end}},
+        {"_id": 0},
+    ).sort("date", 1).to_list(500)
+
+    summary = PayrollService.calculate_worker_month_summary(
+        worker=worker,
+        attendance_list=attendance_records,
+        payments_list=payments,
+        extra_work_list=extra_work,
+        date_str=m_start,
+    )
+
+    attendance_summary = PayrollService.calculate_worker_month_attendance(
+        worker=worker,
+        attendance_records=attendance_records,
+        year=year,
+        month=month,
+        today_date_str=get_today_date(),
+    )
+
+    pdf_bytes = generate_salary_slip_pdf(
+        worker=worker,
+        business=business,
+        summary=summary,
+        attendance_summary=attendance_summary.get("summary", {}),
+        year=year,
+        month=month,
+        recent_payments=payments,
+    )
+
+    month_names = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+    m_name = month_names[month - 1] if 1 <= month <= 12 else str(month)
+    safe_worker_name = sanitize_filename(worker.get("name", "Worker"))
+    filename = f"WorkForce_Salary_Slip_{safe_worker_name}_{m_name}_{year}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store, private",
+        },
+    )
+
+
 
 
 # ---------------- Owner ↔ Worker Chat Endpoints ----------------

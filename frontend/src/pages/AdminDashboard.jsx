@@ -12,16 +12,21 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import WorkerViewModal from "@/components/workerview/WorkerViewModal";
+import WorkerAvatar from "@/components/ui/WorkerAvatar";
+import AttendanceCalendar from "@/components/attendance/AttendanceCalendar";
+import SalarySlipModal from "@/components/salary/SalarySlipModal";
 import AudioPlayer from "@/components/chat/AudioPlayer";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
 import useSmartChatScroll from "@/components/chat/useSmartChatScroll";
 import { clearConversationNotifications, enablePushNotifications, pushSupported, updateAppBadge } from "@/lib/notifications";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   HardHat, LayoutDashboard, Users, CalendarCheck, Wallet, Sparkles, LogOut,
-  Plus, Pencil, Trash2, Loader2, Menu, X, Search, ArrowUpRight, UserPlus,
+  Plus, Pencil, Trash2, Loader2, Menu, X, Search, UserPlus,
   MessageSquare, Eye, Send, Mic, Building2, CheckCircle2, ChevronRight,
-  KeyRound, RefreshCw, Copy, Power
+  KeyRound, RefreshCw, Copy, Power, BarChart3, CircleDollarSign, ClipboardList,
+  Camera, Upload, Image as ImageIcon
 } from "lucide-react";
 
 const WORK_TYPES = ["Driver", "Helper", "Labour", "Technician", "Supervisor", "Electrician", "Plumber", "Other"];
@@ -238,7 +243,7 @@ export default function AdminDashboard() {
         </header>
 
         <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-          {view === "overview" && <OverviewSection workers={workers} onNavigate={setView} />}
+          {view === "overview" && <OverviewSection workers={workers} admin={admin} onNavigate={setView} />}
           {view === "workers" && (
             <WorkersSection
               workers={workers}
@@ -293,25 +298,55 @@ export default function AdminDashboard() {
 }
 
 /* ---------------- 1. Overview Section ---------------- */
-function OverviewSection({ workers, onNavigate }) {
+function OverviewSection({ workers, admin, onNavigate }) {
   const [stats, setStats] = useState(null);
+  const [statsError, setStatsError] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(true);
 
-  useEffect(() => {
-    adminApi.get("/admin/stats").then((r) => setStats(r.data)).catch(() => {});
-  }, [workers]);
+  const loadStats = useCallback(async () => {
+    setStatsLoading(true);
+    setStatsError(false);
+    try {
+      const { data } = await adminApi.get("/admin/stats");
+      setStats(data);
+    } catch (_) {
+      setStatsError(true);
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadStats(); }, [loadStats, workers.length]);
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening";
+  const todayLabel = new Intl.DateTimeFormat("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
+  const activityText = (item) => {
+    if (item.kind === "attendance") return `${item.status} marked`;
+    if (item.kind === "extra_work") return `Extra work · ${money(item.amount)}`;
+    return `${item.payment_type === "ADVANCE" ? "Advance" : "Payment"} · ${money(item.amount)}`;
+  };
+
+  const quickActions = [
+    { label: "Add Worker", sub: "Create team profile", icon: UserPlus, view: "workers", color: "bg-[#102f2c] text-white" },
+    { label: "Mark Attendance", sub: "Update today", icon: CalendarCheck, view: "attendance", color: "bg-emerald-50 text-emerald-900 border border-emerald-200" },
+    { label: "Add Payment", sub: "Salary or advance", icon: Wallet, view: "payments", color: "bg-amber-100 text-amber-950" },
+    { label: "Extra Work", sub: "Record work item", icon: Sparkles, view: "extra", color: "bg-indigo-50 text-indigo-950 border border-indigo-100" },
+    { label: "Open Chat", sub: "Message workers", icon: MessageSquare, view: "messages", color: "bg-white text-slate-900 border border-stone-200" },
+  ];
 
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-7">
         <div>
           <p className="text-xs font-bold text-teal-800 uppercase tracking-[.16em]">
-            Operations Center / आज का हिसाब
+            {admin.business_name || admin.business?.name || "WorkForce"}
           </p>
           <h1 className="font-display text-3xl font-extrabold text-slate-950 mt-1">
-            Today at a glance
+            {greeting}, {admin.name || "Admin"}
           </h1>
           <p className="text-slate-500 text-sm mt-1">
-            Live attendance, daily earned salary, advances, and payouts.
+            {todayLabel}
           </p>
         </div>
         <Button
@@ -323,116 +358,52 @@ function OverviewSection({ workers, onNavigate }) {
         </Button>
       </div>
 
-      {!stats ? (
-        <div className="py-12 text-center">
-          <Loader2 className="h-6 w-6 animate-spin mx-auto text-teal-800" />
+      {statsLoading ? (
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4" aria-label="Loading dashboard">
+          {Array.from({ length: 6 }).map((_, index) => <div key={index} className="h-28 rounded-2xl bg-stone-200/70 animate-pulse" />)}
+        </div>
+      ) : statsError ? (
+        <div className="bg-white border border-rose-200 rounded-2xl p-7 text-center">
+          <p className="font-semibold text-slate-800">Dashboard data could not be loaded.</p>
+          <p className="text-sm text-slate-500 mt-1">Please try again.</p>
+          <Button onClick={loadStats} variant="outline" className="mt-4 rounded-xl"><RefreshCw className="h-4 w-4 mr-2" />Retry</Button>
         </div>
       ) : (
         <>
-          {/* Daily Attendance Count Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-            <div className="bg-white border border-stone-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-              <p className="text-xs sm:text-sm text-slate-500 font-medium">Total Workers / कुल</p>
-              <p className="font-display text-2xl sm:text-3xl font-bold mt-1 text-slate-900">
-                {stats.total_workers}
-              </p>
-            </div>
-            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-              <p className="text-xs sm:text-sm text-emerald-800 font-medium">Present / हाज़िर</p>
-              <p className="font-display text-2xl sm:text-3xl font-bold mt-1 text-emerald-700">
-                {stats.present_today}
-              </p>
-            </div>
-            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-              <p className="text-xs sm:text-sm text-amber-800 font-medium">Half Day / आधा दिन</p>
-              <p className="font-display text-2xl sm:text-3xl font-bold mt-1 text-amber-700">
-                {stats.half_day_today}
-              </p>
-            </div>
-            <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-              <p className="text-xs sm:text-sm text-rose-800 font-medium">Absent / गैरहाज़िर</p>
-              <p className="font-display text-2xl sm:text-3xl font-bold mt-1 text-rose-700">
-                {stats.absent_today}
-              </p>
-            </div>
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+            {[
+              [HardHat, "Total Workers", stats.total_workers, "Team members", "bg-white text-slate-900"],
+              [CheckCircle2, "Present Today", stats.present_today, `${stats.half_day_today} half day`, "bg-emerald-50 text-emerald-800 border-emerald-200"],
+              [X, "Absent Today", stats.absent_today, `${stats.not_marked_today} not marked`, "bg-rose-50 text-rose-800 border-rose-200"],
+              [Wallet, "Today's Payments", money(stats.today_payments), "Recorded today", "bg-amber-50 text-amber-900 border-amber-200"],
+              [CircleDollarSign, "Pending Salary", money(stats.remaining_payable), "Current month payable", "bg-teal-950 text-white"],
+              [BarChart3, "This Month Expense", money(stats.total_paid_month), "All recorded payouts", "bg-indigo-50 text-indigo-900 border-indigo-100"],
+            ].map(([Icon, label, value, helper, style]) => <div key={label} className={`rounded-2xl border p-4 sm:p-5 shadow-sm min-w-0 ${style}`}>
+              <Icon className="h-5 w-5 mb-3 text-amber-500" /><p className="text-xs font-semibold opacity-75">{label}</p><p className="font-display text-xl sm:text-2xl font-extrabold mt-1 truncate">{value}</p><p className="text-[11px] mt-1 opacity-70 truncate">{helper}</p>
+            </div>)}
           </div>
 
-          {/* Monthly Payroll & Financial Summary Cards */}
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
-            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-              <p className="text-xs text-slate-500 font-medium">इस महीने की कमाई / Earned</p>
-              <p className="font-display text-2xl font-bold mt-1 text-teal-800">
-                {money(stats.gross_earned_month)}
-              </p>
-              <p className="text-[11px] text-slate-400 mt-1">हाज़िरी + अतिरिक्त काम</p>
+          {stats.total_workers === 0 ? <div className="mt-6 bg-white border border-stone-200 rounded-2xl p-7 text-center"><HardHat className="h-8 w-8 text-amber-500 mx-auto mb-2" /><p className="font-semibold">No workers added yet.</p><Button onClick={() => onNavigate("workers")} className="mt-4 rounded-xl bg-teal-800">Add Your First Worker</Button></div> : <>
+            <div className="grid lg:grid-cols-[.9fr_1.4fr] gap-4 mt-6">
+              <section className="bg-white border border-stone-200 rounded-2xl p-5"><div className="flex items-center gap-2"><ClipboardList className="h-5 w-5 text-teal-800" /><h2 className="font-display font-bold">Today's Attendance</h2></div>{stats.present_today + stats.absent_today + stats.half_day_today ? <><div className="mt-5 flex justify-between text-sm"><span>Present <b>{stats.present_today}</b></span><span>Absent <b>{stats.absent_today}</b></span></div><div className="h-2.5 bg-stone-100 rounded-full overflow-hidden mt-3"><div className="h-full bg-teal-700 rounded-full" style={{ width: `${Math.min(100, stats.attendance_rate)}%` }} /></div><p className="mt-2 text-xs text-slate-500">Attendance rate <b className="text-teal-800">{stats.attendance_rate}%</b></p></> : <p className="py-8 text-center text-sm text-slate-400">No attendance recorded today.</p>}</section>
+              <section className="bg-white border border-stone-200 rounded-2xl p-5 min-w-0"><h2 className="font-display font-bold">Monthly Attendance</h2><p className="text-xs text-slate-500 mt-1">Present workers by day</p>{stats.monthly_attendance.length ? <div className="h-48 mt-3"><ResponsiveContainer width="100%" height="100%"><BarChart data={stats.monthly_attendance}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="date" tickFormatter={(value) => value.slice(-2)} tick={{ fontSize: 10 }} /><YAxis allowDecimals={false} tick={{ fontSize: 10 }} width={24} /><Tooltip /><Bar dataKey="present" name="Present" fill="#0f766e" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div> : <p className="py-14 text-center text-sm text-slate-400">No attendance recorded this month.</p>}</section>
             </div>
+          </>}
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-              <p className="text-xs text-slate-500 font-medium">वेतन भुगतान / Paid</p>
-              <p className="font-display text-2xl font-bold mt-1 text-teal-600">
-                {money(stats.paid_this_month)}
-              </p>
-              <p className="text-[11px] text-slate-400 mt-1">सैलरी पेमेंट</p>
-            </div>
+          <section className="mt-6 bg-white border border-stone-200 rounded-2xl p-5">
+            <div className="flex items-center gap-2"><Wallet className="h-5 w-5 text-teal-800" /><h2 className="font-display font-bold text-lg">Payment Overview</h2></div>
+            {stats.payment_count_this_month ? <div className="grid grid-cols-3 gap-3 mt-4">
+              {[
+                ["Paid this month", money(stats.paid_this_month)],
+                ["Advances", money(stats.advances_this_month)],
+                ["Extra work paid", money(stats.extra_work_paid_this_month)],
+              ].map(([label, value]) => <div key={label} className="rounded-xl bg-stone-50 border border-stone-100 p-3 min-w-0"><p className="text-[11px] text-slate-500 leading-tight">{label}</p><p className="font-display font-bold text-sm sm:text-lg mt-1 truncate">{value}</p></div>)}
+            </div> : <p className="py-8 text-center text-sm text-slate-400">No payments recorded yet.</p>}
+          </section>
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-              <p className="text-xs text-slate-500 font-medium">पेशगी / Advances Taken</p>
-              <p className="font-display text-2xl font-bold mt-1 text-amber-700">
-                {money(stats.advances_this_month)}
-              </p>
-              <p className="text-[11px] text-slate-400 mt-1">अग्रिम राशि</p>
-            </div>
+          <section className="mt-6"><h2 className="font-display font-bold text-lg">Quick Actions</h2><div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mt-3">{quickActions.map(({ label, sub, icon: Icon, view, color }) => <button key={view} onClick={() => onNavigate(view)} className={`rounded-2xl p-4 min-h-28 text-left transition-transform active:scale-[.98] ${color}`}><Icon className="h-5 w-5 mb-3" /><span className="block text-sm font-bold">{label}</span><span className="block text-[11px] opacity-70 mt-1">{sub}</span></button>)}</div></section>
 
-            <div className="bg-[#102f2c] text-white rounded-2xl p-5 shadow-md">
-              <p className="text-xs text-amber-300 font-bold uppercase tracking-wider">बाकी पैसा / Remaining</p>
-              <p className="font-display text-2xl sm:text-3xl font-extrabold mt-1 text-amber-300">
-                {money(stats.remaining_payable)}
-              </p>
-              <p className="text-[11px] text-teal-200 mt-1">कमाई - (वेतन + पेशगी)</p>
-            </div>
-          </div>
-
-          {/* Quick Actions */}
-          <div className="grid sm:grid-cols-3 gap-4 mt-6">
-            <button
-              data-testid="overview-add-worker"
-              onClick={() => onNavigate("workers")}
-              className="group bg-[#102f2c] text-white rounded-2xl p-5 text-left flex items-center justify-between shadow-sm hover:bg-[#153e3a] transition-all"
-            >
-              <span>
-                <UserPlus className="h-5 w-5 text-amber-300 mb-3" />
-                <strong className="font-display block text-base">Add Workers / कर्मचारी जोड़ें</strong>
-                <small className="text-teal-200 text-xs">Manage team records</small>
-              </span>
-              <ArrowUpRight className="h-5 w-5 text-teal-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-            </button>
-
-            <button
-              data-testid="overview-record-payment"
-              onClick={() => onNavigate("payments")}
-              className="group bg-amber-200 text-slate-950 rounded-2xl p-5 text-left flex items-center justify-between shadow-sm hover:bg-amber-300 transition-all"
-            >
-              <span>
-                <Wallet className="h-5 w-5 text-amber-900 mb-3" />
-                <strong className="font-display block text-base">Payment & Advance / पेशगी दर्ज करें</strong>
-                <small className="text-amber-950/70 text-xs">Record salary or advance</small>
-              </span>
-              <ArrowUpRight className="h-5 w-5 text-amber-900 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-            </button>
-
-            <button
-              data-testid="overview-open-messages"
-              onClick={() => onNavigate("messages")}
-              className="group bg-white border border-stone-300 text-slate-900 rounded-2xl p-5 text-left flex items-center justify-between shadow-sm hover:border-teal-700 transition-all"
-            >
-              <span>
-                <MessageSquare className="h-5 w-5 text-teal-800 mb-3" />
-                <strong className="font-display block text-base">Chat & Voice Notes / बातचीत</strong>
-                <small className="text-slate-500 text-xs">Send audio or text to workers</small>
-              </span>
-              <ArrowUpRight className="h-5 w-5 text-teal-800 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-            </button>
-          </div>
+          <section className="mt-6 bg-white border border-stone-200 rounded-2xl p-5"><h2 className="font-display font-bold text-lg">Recent Activity</h2>{stats.recent_activity.length ? <div className="mt-3 divide-y divide-stone-100">{stats.recent_activity.map((item, index) => <div key={`${item.kind}-${item.worker_name}-${index}`} className="py-3 flex justify-between gap-3 text-sm"><div className="min-w-0"><b className="text-slate-800">{item.worker_name}</b><span className="text-slate-500"> · {activityText(item)}</span></div><span className="shrink-0 text-xs text-slate-400">{item.date}</span></div>)}</div> : <p className="py-8 text-center text-sm text-slate-400">No recent activity yet.</p>}</section>
         </>
       )}
     </div>
@@ -466,6 +437,12 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
   const [credentials, setCredentials] = useState(null);
   const [resettingPassword, setResettingPassword] = useState(false);
 
+  // Profile Photo state
+  const [selectedPhotoFile, setSelectedPhotoFile] = useState(null);
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState("");
+  const [photoRemoved, setPhotoRemoved] = useState(false);
+  const photoInputRef = useRef(null);
+
   const visibleWorkers = workers.filter((w) =>
     [w.name, w.mobile, w.work_type, w.email, w.login_id].some((v) =>
       String(v || "").toLowerCase().includes(query.toLowerCase())
@@ -475,18 +452,55 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
   const openNew = () => {
     setForm(newWorkerForm());
     setEditing(null);
+    setSelectedPhotoFile(null);
+    setPhotoPreviewUrl("");
+    setPhotoRemoved(false);
     setResettingPassword(false);
     setOpen(true);
   };
 
   const openEdit = (w) => {
     setForm({
-      ...w, salary: String(w.salary), email: w.email || "", status: w.status || "ACTIVE",
-      portal_enabled: Boolean(w.portal_enabled), login_id: w.login_id || "", password: "",
+      ...w,
+      salary: String(w.salary),
+      email: w.email || "",
+      status: w.status || "ACTIVE",
+      portal_enabled: Boolean(w.portal_enabled),
+      login_id: w.login_id || "",
+      password: "",
     });
     setEditing(w.id);
+    setSelectedPhotoFile(null);
+    setPhotoPreviewUrl(w.profile_photo_url || "");
+    setPhotoRemoved(false);
     setResettingPassword(false);
     setOpen(true);
+  };
+
+  const handlePhotoSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const validTypes = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
+    if (!validTypes.includes(file.type.toLowerCase())) {
+      toast.error("Unsupported image format. Please use JPEG, PNG, or WebP / केवल JPEG, PNG या WebP फोटो इस्तेमाल करें।");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Profile photo exceeds the 5 MB limit / फोटो का साइज 5 MB से कम होना चाहिए।");
+      return;
+    }
+    setSelectedPhotoFile(file);
+    setPhotoPreviewUrl(URL.createObjectURL(file));
+    setPhotoRemoved(false);
+  };
+
+  const handleRemovePhoto = () => {
+    setSelectedPhotoFile(null);
+    setPhotoPreviewUrl("");
+    setPhotoRemoved(true);
+    if (photoInputRef.current) {
+      photoInputRef.current.value = "";
+    }
   };
 
   const save = async () => {
@@ -504,6 +518,30 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
       const response = editing
         ? await adminApi.put(`/workers/${editing}`, payload)
         : await adminApi.post("/workers", payload);
+      
+      const savedWorkerId = editing || response.data.id || response.data.worker?.id;
+
+      // Handle photo changes if any
+      if (savedWorkerId) {
+        if (photoRemoved) {
+          try {
+            await adminApi.delete(`/workers/${savedWorkerId}/profile-photo`);
+          } catch (err) {
+            console.error("Failed to delete photo:", err);
+          }
+        } else if (selectedPhotoFile) {
+          try {
+            const photoForm = new FormData();
+            photoForm.append("file", selectedPhotoFile);
+            await adminApi.post(`/workers/${savedWorkerId}/profile-photo`, photoForm, {
+              headers: { "Content-Type": "multipart/form-data" },
+            });
+          } catch (err) {
+            toast.error("Photo upload failed. Please try again. / फोटो अपलोड नहीं हो सकी, पुनः प्रयास करें।");
+          }
+        }
+      }
+
       toast.success(editing ? "Worker updated" : "Worker added successfully");
       setOpen(false);
       if (response.data.one_time_credentials) {
@@ -574,24 +612,24 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
         />
       </div>
 
-      <div className="bg-white border border-stone-200 rounded-2xl shadow-sm overflow-x-auto">
-        <table className="w-full text-left min-w-[900px]" data-testid="workers-table">
+      {/* Desktop Table (Hidden on small mobile screens) */}
+      <div className="hidden md:block bg-white border border-stone-200 rounded-2xl shadow-sm overflow-x-auto">
+        <table className="w-full text-left min-w-[850px]" data-testid="workers-table">
           <thead>
             <tr className="bg-stone-50 text-slate-600 text-xs uppercase tracking-wider font-bold border-b border-stone-200">
-              <th className="py-3.5 px-4">Name / नाम</th>
+              <th className="py-3.5 px-4">Worker / कर्मचारी</th>
+              <th className="py-3.5 px-4">Role / काम</th>
               <th className="py-3.5 px-4">Mobile</th>
-              <th className="py-3.5 px-4">Role</th>
               <th className="py-3.5 px-4">Monthly Salary</th>
               <th className="py-3.5 px-4">Status</th>
               <th className="py-3.5 px-4">Portal Access</th>
-              <th className="py-3.5 px-4">Worker ID</th>
               <th className="py-3.5 px-4 text-right">Actions / हिसाब</th>
             </tr>
           </thead>
           <tbody>
             {visibleWorkers.length === 0 && (
               <tr>
-                <td colSpan={8} className="py-12 text-center text-slate-400 text-sm">
+                <td colSpan={7} className="py-12 text-center text-slate-400 text-sm">
                   {workers.length ? "No workers match your search." : "No workers added yet. Click 'Add Worker'."}
                 </td>
               </tr>
@@ -603,20 +641,35 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
                   data-testid={`worker-row-${w.id}`}
                   className="border-t border-stone-100 hover:bg-stone-50/70 transition-colors"
                 >
-                  <td className="py-3.5 px-4 font-bold text-slate-900">{w.name}</td>
-                  <td className="py-3.5 px-4 font-mono text-sm text-slate-600">{w.mobile}</td>
-                  <td className="py-3.5 px-4">
+                  <td className="py-3 px-4">
+                    <div className="flex items-center gap-3">
+                      <WorkerAvatar
+                        name={w.name}
+                        photoUrl={w.profile_photo_url}
+                        size="md"
+                        className="shadow-sm border border-stone-200 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-900 leading-tight">{w.name}</p>
+                        <p className="text-[11px] font-mono font-semibold text-teal-800 mt-0.5">
+                          {w.login_id || "WF-ID N/A"}
+                        </p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-3 px-4">
                     <Badge variant="secondary" className="rounded-lg text-xs font-semibold">
                       {w.work_type}
                     </Badge>
                   </td>
-                  <td className="py-3.5 px-4 text-slate-900 font-bold">{money(w.salary)}</td>
-                  <td className="py-3.5 px-4">
+                  <td className="py-3 px-4 font-mono text-sm text-slate-600">{w.mobile || "—"}</td>
+                  <td className="py-3 px-4 text-slate-900 font-bold">{money(w.salary)}</td>
+                  <td className="py-3 px-4">
                     <Badge className={w.status === "INACTIVE" ? "bg-slate-100 text-slate-600" : "bg-emerald-50 text-emerald-700 border border-emerald-200"}>
                       {w.status === "INACTIVE" ? "Inactive" : "Active"}
                     </Badge>
                   </td>
-                  <td className="py-3.5 px-4">
+                  <td className="py-3 px-4">
                     {w.portal_enabled ? (
                       <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
                         <CheckCircle2 className="h-3.5 w-3.5" /> Login Enabled
@@ -627,8 +680,7 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
                       </span>
                     )}
                   </td>
-                  <td className="py-3.5 px-4 font-mono text-xs font-bold text-slate-700">{w.login_id || "—"}</td>
-                  <td className="py-3.5 px-4 text-right">
+                  <td className="py-3 px-4 text-right">
                     <div className="flex items-center justify-end gap-1.5">
                       {/* Worker View (Phone display mode) */}
                       <button
@@ -666,6 +718,102 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
         </table>
       </div>
 
+      {/* Mobile Stacked Cards (Optimized for 320px, 360px, 375px, 390px, 412px, 430px) */}
+      <div className="md:hidden space-y-3" data-testid="workers-mobile-cards">
+        {visibleWorkers.length === 0 && (
+          <div className="p-8 text-center bg-white rounded-2xl border border-stone-200 text-slate-400 text-sm">
+            {workers.length ? "No workers match your search." : "No workers added yet. Click 'Add Worker'."}
+          </div>
+        )}
+        {visibleWorkers.map((w) => (
+          <div
+            key={w.id}
+            data-testid={`worker-card-${w.id}`}
+            className="bg-white border border-stone-200 rounded-2xl p-4 shadow-sm space-y-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <WorkerAvatar
+                  name={w.name}
+                  photoUrl={w.profile_photo_url}
+                  size="lg"
+                  className="shadow-sm border border-stone-200 shrink-0"
+                />
+                <div className="min-w-0">
+                  <h3 className="font-display font-bold text-base text-slate-900 leading-tight truncate">
+                    {w.name}
+                  </h3>
+                  <div className="flex items-center gap-2 mt-1">
+                    <Badge variant="secondary" className="text-[11px] font-semibold">
+                      {w.work_type}
+                    </Badge>
+                    <Badge className={w.status === "INACTIVE" ? "bg-slate-100 text-slate-600 text-[10px]" : "bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px]"}>
+                      {w.status === "INACTIVE" ? "Inactive" : "Active"}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+              {w.login_id && (
+                <span className="font-mono text-xs font-bold text-teal-800 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-md shrink-0">
+                  {w.login_id}
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs bg-stone-50 rounded-xl p-2.5 border border-stone-100">
+              <div>
+                <span className="text-slate-400 block text-[10px]">Mobile</span>
+                <span className="font-mono font-semibold text-slate-800">{w.mobile || "—"}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px]">Monthly Salary</span>
+                <span className="font-bold text-slate-900">{money(w.salary)}</span>
+              </div>
+              <div className="col-span-2 flex items-center justify-between pt-1 border-t border-stone-200/60">
+                <span className="text-slate-400 text-[10px]">Portal Access:</span>
+                {w.portal_enabled ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                    <CheckCircle2 className="h-3 w-3" /> Login Enabled
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-slate-400">No Login</span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-stone-100">
+              <button
+                data-testid={`view-worker-card-account-${w.id}`}
+                onClick={() => onOpenWorkerView(w.id)}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-bold py-2 px-3 rounded-xl bg-teal-800 text-white hover:bg-teal-900 transition-colors shadow-sm"
+              >
+                <Eye className="h-3.5 w-3.5" /> हिसाब दिखाएं
+              </button>
+              <Button
+                data-testid={`edit-worker-card-${w.id}`}
+                variant="outline"
+                size="sm"
+                onClick={() => openEdit(w)}
+                className="rounded-xl border-stone-200 hover:bg-stone-50 h-9 w-9 p-0"
+                aria-label="Edit worker"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                data-testid={`delete-worker-card-${w.id}`}
+                variant="outline"
+                size="sm"
+                onClick={() => setDelTarget(w)}
+                className="rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 h-9 w-9 p-0"
+                aria-label="Delete worker"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
       {/* Add / Edit Worker Modal */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="w-[calc(100%_-_1.5rem)] max-w-2xl max-h-[92vh] overflow-y-auto rounded-3xl p-0 gap-0">
@@ -678,94 +826,157 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
             </p>
           </DialogHeader>
           <div className="p-5 sm:p-6 space-y-6">
+
+            {/* Profile Photo Section */}
+            <section className="rounded-2xl border border-stone-200 bg-stone-50/70 p-4 sm:p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-extrabold uppercase tracking-wider text-teal-800">
+                    Profile Photo / कर्मचारी फोटो
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    पहचान पत्र और पोर्टल के लिए फोटो (Max 5 MB, JPEG / PNG / WebP)
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-1">
+                <div className="shrink-0 flex items-center justify-center">
+                  <WorkerAvatar
+                    name={form.name || "Worker"}
+                    photoUrl={photoRemoved ? "" : photoPreviewUrl}
+                    size="2xl"
+                    className="shadow-md border-2 border-stone-200 ring-2 ring-teal-800/10"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-2 min-w-0 flex-1">
+                  <input
+                    ref={photoInputRef}
+                    type="file"
+                    id="worker-photo-upload-input"
+                    data-testid="worker-photo-file-input"
+                    accept="image/jpeg,image/png,image/webp,image/jpg"
+                    onChange={handlePhotoSelect}
+                    className="hidden"
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label
+                      htmlFor="worker-photo-upload-input"
+                      className="inline-flex items-center gap-1.5 text-xs font-bold py-2 px-3.5 rounded-xl bg-teal-800 text-white hover:bg-teal-900 transition-colors cursor-pointer shadow-sm active:scale-95"
+                    >
+                      <Camera className="h-3.5 w-3.5" />
+                      <span>{photoPreviewUrl && !photoRemoved ? "Change Photo / फोटो बदलें" : "Upload Photo / फोटो अपलोड करें"}</span>
+                    </label>
+
+                    {(photoPreviewUrl || selectedPhotoFile) && !photoRemoved && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRemovePhoto}
+                        data-testid="worker-photo-remove-btn"
+                        className="rounded-xl border-rose-200 text-rose-700 hover:bg-rose-50 text-xs font-bold"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 mr-1" /> Remove / हटाएं
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    फोटो नहीं होने पर नाम के शुरुआती अक्षरों (Initials) से साफ़ अवतार दिखेगा।
+                  </p>
+                </div>
+              </div>
+            </section>
+
             <section className="space-y-4">
               <h3 className="text-xs font-extrabold uppercase tracking-wider text-teal-800">Worker Details / कर्मचारी विवरण</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
-              <div className="min-w-0">
-                <Label className="text-xs font-semibold text-slate-700">Full Name / पूरा नाम</Label>
-                <Input
-                  data-testid="worker-name-input"
-                  autoFocus
-                  placeholder="e.g. Ramesh Kumar"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  className="mt-1 w-full min-w-0 rounded-xl"
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+                <div className="min-w-0">
+                  <Label className="text-xs font-semibold text-slate-700">Full Name / पूरा नाम</Label>
+                  <Input
+                    data-testid="worker-name-input"
+                    autoFocus
+                    placeholder="e.g. Ramesh Kumar"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    className="mt-1 w-full min-w-0 rounded-xl"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <Label className="text-xs font-semibold text-slate-700">Mobile Number / मोबाइल नंबर</Label>
+                  <Input
+                    data-testid="worker-mobile-input"
+                    type="tel"
+                    placeholder="10-digit mobile"
+                    value={form.mobile}
+                    onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+                    className="mt-1 w-full min-w-0 rounded-xl"
+                  />
+                </div>
               </div>
-              <div className="min-w-0">
-                <Label className="text-xs font-semibold text-slate-700">Mobile Number / मोबाइल नंबर</Label>
-                <Input
-                  data-testid="worker-mobile-input"
-                  type="tel"
-                  placeholder="10-digit mobile"
-                  value={form.mobile}
-                  onChange={(e) => setForm({ ...form, mobile: e.target.value })}
-                  className="mt-1 w-full min-w-0 rounded-xl"
-                />
-              </div>
-            </div>
 
-            <div>
-              <Label className="text-xs font-semibold text-slate-700">Work Type / काम का प्रकार</Label>
-              <div data-testid="worker-type-select" className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1.5">
-                {WORK_TYPES.map((type) => (
-                  <button
-                    key={type}
-                    type="button"
-                    data-testid={`worker-type-${type.toLowerCase().replace(/\s/g, "-")}`}
-                    onClick={() => setForm({ ...form, work_type: type })}
-                    className={`min-h-10 px-3 py-2 rounded-xl border text-xs font-bold transition-all ${
-                      form.work_type === type
-                        ? "bg-teal-800 border-teal-800 text-white shadow-sm"
-                        : "bg-white border-stone-200 text-slate-700 hover:bg-stone-50"
-                    }`}
-                  >
-                    {type}
-                  </button>
-                ))}
+              <div>
+                <Label className="text-xs font-semibold text-slate-700">Work Type / काम का प्रकार</Label>
+                <div data-testid="worker-type-select" className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1.5">
+                  {WORK_TYPES.map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      data-testid={`worker-type-${type.toLowerCase().replace(/\s/g, "-")}`}
+                      onClick={() => setForm({ ...form, work_type: type })}
+                      className={`min-h-10 px-3 py-2 rounded-xl border text-xs font-bold transition-all ${
+                        form.work_type === type
+                          ? "bg-teal-800 border-teal-800 text-white shadow-sm"
+                          : "bg-white border-stone-200 text-slate-700 hover:bg-stone-50"
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+                <div className="min-w-0">
+                  <Label className="text-xs font-semibold text-slate-700">Joining Date / तारीख</Label>
+                  <Input
+                    data-testid="worker-joindate-input"
+                    type="date"
+                    value={form.joining_date}
+                    onChange={(e) => setForm({ ...form, joining_date: e.target.value })}
+                    className="mt-1 w-full min-w-0 rounded-xl"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <Label className="text-xs font-semibold text-slate-700">Monthly Salary (₹) / मासिक वेतन</Label>
+                  <Input
+                    data-testid="worker-salary-input"
+                    type="number"
+                    placeholder="e.g. 25000"
+                    value={form.salary}
+                    onChange={(e) => setForm({ ...form, salary: e.target.value })}
+                    className="mt-1 w-full min-w-0 rounded-xl"
+                  />
+                </div>
+              </div>
+
               <div className="min-w-0">
-                <Label className="text-xs font-semibold text-slate-700">Joining Date / तारीख</Label>
+                <Label className="text-xs font-semibold text-slate-700">
+                  Email Address (Optional / वैकल्पिक)
+                </Label>
                 <Input
-                  data-testid="worker-joindate-input"
-                  type="date"
-                  value={form.joining_date}
-                  onChange={(e) => setForm({ ...form, joining_date: e.target.value })}
+                  data-testid="worker-email-input"
+                  type="email"
+                  placeholder="worker@example.com (वैकल्पिक)"
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
                   className="mt-1 w-full min-w-0 rounded-xl"
                 />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  वैकल्पिक — सूचनाओं और रिकॉर्ड के लिए उपयोगी।
+                </p>
               </div>
-              <div className="min-w-0">
-                <Label className="text-xs font-semibold text-slate-700">Monthly Salary (₹) / मासिक वेतन</Label>
-                <Input
-                  data-testid="worker-salary-input"
-                  type="number"
-                  placeholder="e.g. 25000"
-                  value={form.salary}
-                  onChange={(e) => setForm({ ...form, salary: e.target.value })}
-                  className="mt-1 w-full min-w-0 rounded-xl"
-                />
-              </div>
-            </div>
-
-            <div className="min-w-0">
-              <Label className="text-xs font-semibold text-slate-700">
-                Email Address (Optional / वैकल्पिक)
-              </Label>
-              <Input
-                data-testid="worker-email-input"
-                type="email"
-                placeholder="worker@example.com (वैकल्पिक)"
-                value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
-                className="mt-1 w-full min-w-0 rounded-xl"
-              />
-              <p className="text-[11px] text-slate-400 mt-1">
-                वैकल्पिक — सूचनाओं और रिकॉर्ड के लिए उपयोगी।
-              </p>
-            </div>
             </section>
 
             <section className="rounded-2xl border border-stone-200 bg-stone-50 p-4 space-y-3">
@@ -906,9 +1117,17 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
 
 /* ---------------- 3. Attendance Section ---------------- */
 function AttendanceSection({ workers }) {
+  const [viewMode, setViewMode] = useState("daily"); // "daily" or "calendar"
+  const [selectedCalendarWorkerId, setSelectedCalendarWorkerId] = useState(workers[0]?.id || "");
   const [date, setDate] = useState(todayDateStr());
   const [records, setRecords] = useState({});
   const [markingAll, setMarkingAll] = useState(false);
+
+  useEffect(() => {
+    if (workers.length > 0 && !selectedCalendarWorkerId) {
+      setSelectedCalendarWorkerId(workers[0].id);
+    }
+  }, [workers, selectedCalendarWorkerId]);
 
   const load = useCallback(async () => {
     try {
@@ -965,102 +1184,218 @@ function AttendanceSection({ workers }) {
     }
   };
 
+  const selectedWorker = workers.find((w) => w.id === selectedCalendarWorkerId) || workers[0];
+
   return (
     <div>
+      {/* Top Header & Mode Switcher */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="font-display text-2xl font-bold text-slate-900">Attendance / हाज़िरी</h1>
           <p className="text-slate-500 text-sm">
-            Mark attendance for today or any previous date. Attendance calculates daily earned salary.
+            Mark attendance for today or browse complete monthly attendance calendars.
           </p>
         </div>
 
-        {/* Date Selector with Quick Buttons */}
-        <div className="flex items-center gap-2 bg-white p-2 border border-stone-200 rounded-2xl shadow-sm">
+        {/* View Mode Switcher */}
+        <div className="flex items-center gap-1 bg-stone-200/80 p-1 rounded-2xl self-start sm:self-auto shadow-xs">
           <button
             type="button"
-            onClick={() => setQuickDate("today")}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
-              date === todayDateStr() ? "bg-teal-800 text-white" : "bg-stone-100 text-slate-700 hover:bg-stone-200"
+            data-testid="attendance-view-daily-btn"
+            onClick={() => setViewMode("daily")}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              viewMode === "daily"
+                ? "bg-white text-teal-900 shadow-sm"
+                : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            आज (Today)
+            <CalendarCheck className="h-3.5 w-3.5 inline mr-1.5 text-teal-800" />
+            रोज़ाना हाज़िरी (Daily)
           </button>
           <button
             type="button"
-            onClick={() => setQuickDate("yesterday")}
-            className="px-3 py-1.5 rounded-xl text-xs font-bold bg-stone-100 text-slate-700 hover:bg-stone-200 transition-colors"
+            data-testid="attendance-view-calendar-btn"
+            onClick={() => setViewMode("calendar")}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              viewMode === "calendar"
+                ? "bg-teal-800 text-white shadow-sm"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
           >
-            पिछला दिन (Yesterday)
+            <BarChart3 className="h-3.5 w-3.5 inline mr-1.5" />
+            मासिक कैलेंडर (Calendar)
           </button>
-          <Input
-            data-testid="attendance-date-input"
-            type="date"
-            max={todayDateStr()}
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="w-auto h-8 text-xs font-semibold rounded-xl"
-          />
         </div>
       </div>
 
-      {workers.length > 0 && (
-        <div className="flex justify-end mb-4">
-          <Button
-            data-testid="mark-all-present-btn"
-            variant="outline"
-            onClick={markEveryonePresent}
-            disabled={markingAll}
-            className="bg-white border-teal-300 text-teal-900 hover:bg-teal-50 rounded-xl text-xs font-bold"
-          >
-            {markingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <CalendarCheck className="h-3.5 w-3.5 mr-1.5 text-teal-800" />}
-            Mark everyone present / सभी को हाज़िर करें
-          </Button>
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {workers.length === 0 && <p className="text-slate-400 py-10 text-center">Add workers first.</p>}
-        {workers.map((w) => {
-          const currentStatus = records[w.id];
-          return (
-            <div
-              key={w.id}
-              data-testid={`attendance-row-${w.id}`}
-              className="bg-white border border-stone-200 rounded-2xl p-4 shadow-sm flex flex-wrap items-center justify-between gap-3"
-            >
-              <div>
-                <p className="font-bold text-slate-900">{w.name}</p>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-slate-500 font-medium">{w.work_type}</span>
-                  <span className="text-[11px] text-slate-400">· ₹{w.salary}/माह</span>
+      {/* Mode 1: Monthly Calendar View */}
+      {viewMode === "calendar" && (
+        <div className="space-y-5">
+          {workers.length === 0 ? (
+            <div className="bg-white border border-stone-200 rounded-3xl p-12 text-center text-slate-400">
+              <Users className="h-10 w-10 mx-auto mb-2 opacity-40 text-teal-800" />
+              <p>Add workers to view monthly attendance calendars.</p>
+            </div>
+          ) : (
+            <>
+              {/* Worker Selector Pills */}
+              <div className="bg-white border border-stone-200 rounded-2xl p-3 shadow-xs">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-2 px-1">
+                  कर्मचारी चुनें / Select Worker:
+                </span>
+                <div className="flex items-center gap-2 overflow-x-auto pb-1" data-testid="calendar-worker-selector">
+                  {workers.map((w) => {
+                    const isSelected = selectedWorker?.id === w.id;
+                    return (
+                      <button
+                        key={w.id}
+                        type="button"
+                        data-testid={`select-worker-cal-${w.id}`}
+                        onClick={() => setSelectedCalendarWorkerId(w.id)}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-2 border ${
+                          isSelected
+                            ? "bg-teal-800 text-white border-teal-800 shadow-sm"
+                            : "bg-stone-50 hover:bg-stone-100 text-slate-700 border-stone-200"
+                        }`}
+                      >
+                        <WorkerAvatar
+                          name={w.name}
+                          photoUrl={w.profile_photo_url}
+                          size="xs"
+                          className="shrink-0"
+                        />
+                        <span>{w.name}</span>
+                        {w.login_id && (
+                          <span className={`text-[10px] font-mono ${isSelected ? "text-amber-300" : "text-slate-400"}`}>
+                            {w.login_id}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                {[
-                  { key: "Present", label: "हाज़िर / Present" },
-                  { key: "Half Day", label: "आधा दिन / Half" },
-                  { key: "Absent", label: "गैरहाज़िर / Absent" },
-                ].map(({ key: s, label }) => (
-                  <button
-                    key={s}
-                    data-testid={`mark-${s.replace(/\s/g, "").toLowerCase()}-${w.id}`}
-                    onClick={() => mark(w.id, s)}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all ${
-                      currentStatus === s
-                        ? attStyle[s]
-                        : "bg-white text-slate-600 border-stone-200 hover:bg-stone-50"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              {/* Monthly Attendance Calendar */}
+              {selectedWorker && (
+                <AttendanceCalendar
+                  key={selectedWorker.id}
+                  workerId={selectedWorker.id}
+                  worker={selectedWorker}
+                  isAdmin={true}
+                  onDateSelect={(clickedDate) => {
+                    setDate(clickedDate);
+                  }}
+                />
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Mode 2: Daily Attendance Marking View */}
+      {viewMode === "daily" && (
+        <>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+            {/* Date Selector with Quick Buttons */}
+            <div className="flex items-center gap-2 bg-white p-2 border border-stone-200 rounded-2xl shadow-sm">
+              <button
+                type="button"
+                onClick={() => setQuickDate("today")}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                  date === todayDateStr() ? "bg-teal-800 text-white" : "bg-stone-100 text-slate-700 hover:bg-stone-200"
+                }`}
+              >
+                आज (Today)
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickDate("yesterday")}
+                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-stone-100 text-slate-700 hover:bg-stone-200 transition-colors"
+              >
+                पिछला दिन (Yesterday)
+              </button>
+              <Input
+                data-testid="attendance-date-input"
+                type="date"
+                max={todayDateStr()}
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="w-auto h-8 text-xs font-semibold rounded-xl"
+              />
             </div>
-          );
-        })}
-      </div>
+
+            {workers.length > 0 && (
+              <Button
+                data-testid="mark-all-present-btn"
+                variant="outline"
+                onClick={markEveryonePresent}
+                disabled={markingAll}
+                className="bg-white border-teal-300 text-teal-900 hover:bg-teal-50 rounded-xl text-xs font-bold"
+              >
+                {markingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <CalendarCheck className="h-3.5 w-3.5 mr-1.5 text-teal-800" />}
+                Mark everyone present / सभी को हाज़िर करें
+              </Button>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            {workers.length === 0 && <p className="text-slate-400 py-10 text-center">Add workers first.</p>}
+            {workers.map((w) => {
+              const currentStatus = records[w.id];
+              return (
+                <div
+                  key={w.id}
+                  data-testid={`attendance-row-${w.id}`}
+                  className="bg-white border border-stone-200 rounded-2xl p-4 shadow-sm flex flex-wrap items-center justify-between gap-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <WorkerAvatar
+                      name={w.name}
+                      photoUrl={w.profile_photo_url}
+                      size="md"
+                      className="border border-stone-200 shadow-xs shrink-0"
+                    />
+                    <div>
+                      <p className="font-bold text-slate-900">{w.name}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-xs text-slate-500 font-medium">{w.work_type}</span>
+                        {w.login_id && (
+                          <span className="text-[11px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
+                            {w.login_id}
+                          </span>
+                        )}
+                        <span className="text-[11px] text-slate-400">· ₹{w.salary}/माह</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {[
+                      { key: "Present", label: "हाज़िर / Present" },
+                      { key: "Half Day", label: "आधा दिन / Half" },
+                      { key: "Absent", label: "गैरहाज़िर / Absent" },
+                    ].map(({ key: s, label }) => (
+                      <button
+                        key={s}
+                        data-testid={`mark-${s.replace(/\s/g, "").toLowerCase()}-${w.id}`}
+                        onClick={() => mark(w.id, s)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all ${
+                          currentStatus === s
+                            ? attStyle[s]
+                            : "bg-white text-slate-600 border-stone-200 hover:bg-stone-50"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1078,6 +1413,7 @@ function PaymentsSection({ workers }) {
   });
   const [saving, setSaving] = useState(false);
   const [delTarget, setDelTarget] = useState(null);
+  const [slipTarget, setSlipTarget] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -1189,28 +1525,15 @@ function PaymentsSection({ workers }) {
               onValueChange={(v) => setForm({ ...form, type: v })}
             >
               <SelectTrigger data-testid="payment-type-select">
-                <SelectValue placeholder="Payment type" />
+                <SelectValue placeholder="Type" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="SALARY_PAYMENT">वेतन भुगतान (Salary Payment)</SelectItem>
+                <SelectItem value="SALARY_PAYMENT">वेतन (Salary Payment)</SelectItem>
                 <SelectItem value="ADVANCE">पेशगी (Advance)</SelectItem>
-                <SelectItem value="EXTRA_WORK_PAYMENT">अतिरिक्त काम भुगतान</SelectItem>
+                <SelectItem value="EXTRA_WORK_PAYMENT">अतिरिक्त काम (Extra Work)</SelectItem>
+                <SelectItem value="ADJUSTMENT">Adjustment</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-
-          {/* Amount */}
-          <div className="space-y-1">
-            <Label className="text-xs font-semibold text-slate-700">Amount (₹) / राशि</Label>
-            <Input
-              data-testid="payment-amount-input"
-              type="number"
-              min="0"
-              placeholder="e.g. 5000"
-              value={form.amount}
-              onChange={(e) => setForm({ ...form, amount: e.target.value })}
-              className="rounded-xl h-10"
-            />
           </div>
 
           {/* Date */}
@@ -1219,19 +1542,34 @@ function PaymentsSection({ workers }) {
             <Input
               data-testid="payment-date-input"
               type="date"
+              max={todayDateStr()}
               value={form.date}
               onChange={(e) => setForm({ ...form, date: e.target.value })}
               className="rounded-xl h-10"
             />
           </div>
+
+          {/* Amount */}
+          <div className="space-y-1">
+            <Label className="text-xs font-semibold text-slate-700">Amount (₹) / राशि</Label>
+            <Input
+              data-testid="payment-amount-input"
+              type="number"
+              min="1"
+              placeholder="e.g. 5000"
+              value={form.amount}
+              onChange={(e) => setForm({ ...form, amount: e.target.value })}
+              className="rounded-xl h-10"
+            />
+          </div>
         </div>
 
-        <div className="grid sm:grid-cols-[1fr_auto] gap-4 items-end mt-4">
+        <div className="grid sm:grid-cols-[1fr_auto] gap-4 mt-4 items-end">
           <div className="space-y-1">
             <Label className="text-xs font-semibold text-slate-700">Note (Optional / विवरण)</Label>
             <Input
               data-testid="payment-note-input"
-              placeholder="e.g. दीवाली बोनस, या दवा के लिए पेशगी"
+              placeholder="e.g. Weekly advance, Diwali bonus adjustment"
               value={form.note}
               onChange={(e) => setForm({ ...form, note: e.target.value })}
               className="rounded-xl h-10"
@@ -1259,44 +1597,76 @@ function PaymentsSection({ workers }) {
             <div
               key={w.id}
               data-testid={`salary-status-${w.id}`}
-              className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm"
+              className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between"
             >
-              <div className="flex justify-between items-start">
-                <div>
-                  <p className="font-bold text-slate-900 text-base">{w.name}</p>
-                  <p className="text-xs text-slate-500">{w.work_type}</p>
+              <div>
+                <div className="flex justify-between items-start gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <WorkerAvatar
+                      name={w.name}
+                      photoUrl={w.profile_photo_url}
+                      size="sm"
+                      className="shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-900 text-sm truncate">{w.name}</p>
+                      <p className="text-xs text-slate-500 truncate">{w.work_type}</p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-slate-500 shrink-0">
+                    {money(w.salary)}/माह
+                  </span>
                 </div>
-                <span className="text-xs font-mono font-bold text-slate-500">
-                  {money(w.salary)}/माह
-                </span>
+
+                {s ? (
+                  <div className="mt-4 space-y-1.5 text-xs">
+                    <div className="flex justify-between py-1 border-b border-stone-100">
+                      <span className="text-slate-500">कमाई (Earned):</span>
+                      <span className="font-bold text-teal-800">{money(s.gross_earned)}</span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-stone-100">
+                      <span className="text-slate-500">वेतन मिला (Paid):</span>
+                      <span className="font-bold text-teal-600">{money(s.paid_this_month)}</span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-stone-100">
+                      <span className="text-slate-500">पेशगी (Advance):</span>
+                      <span className="font-bold text-amber-700">{money(s.advance_taken)}</span>
+                    </div>
+                    <div className="flex justify-between pt-1 font-bold text-sm">
+                      <span className="text-slate-800">बाकी (Payable):</span>
+                      <span className="text-amber-800">{money(s.remaining_payable)}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <Loader2 className="h-4 w-4 animate-spin text-slate-300 mt-4" />
+                )}
               </div>
 
-              {s ? (
-                <div className="mt-4 space-y-1.5 text-xs">
-                  <div className="flex justify-between py-1 border-b border-stone-100">
-                    <span className="text-slate-500">कमाई (Earned):</span>
-                    <span className="font-bold text-teal-800">{money(s.gross_earned)}</span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-stone-100">
-                    <span className="text-slate-500">वेतन मिला (Paid):</span>
-                    <span className="font-bold text-teal-600">{money(s.paid_this_month)}</span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-stone-100">
-                    <span className="text-slate-500">पेशगी (Advance):</span>
-                    <span className="font-bold text-amber-700">{money(s.advance_taken)}</span>
-                  </div>
-                  <div className="flex justify-between pt-1 font-bold text-sm">
-                    <span className="text-slate-800">बाकी (Payable):</span>
-                    <span className="text-amber-800">{money(s.remaining_payable)}</span>
-                  </div>
-                </div>
-              ) : (
-                <Loader2 className="h-4 w-4 animate-spin text-slate-300 mt-4" />
-              )}
+              <div className="mt-4 pt-3 border-t border-stone-100 flex justify-end">
+                <Button
+                  type="button"
+                  data-testid={`worker-slip-btn-${w.id}`}
+                  onClick={() => setSlipTarget(w)}
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl text-xs font-bold text-teal-900 bg-teal-50 hover:bg-teal-100/80 border-teal-200 h-8"
+                >
+                  <FileText className="h-3.5 w-3.5 mr-1 text-teal-800" /> वेतन पर्ची (PDF)
+                </Button>
+              </div>
             </div>
           );
         })}
       </div>
+
+      {/* Salary Slip Modal */}
+      <SalarySlipModal
+        open={!!slipTarget}
+        onClose={() => setSlipTarget(null)}
+        workerId={slipTarget?.id}
+        worker={slipTarget}
+        isAdmin={true}
+      />
 
       {/* Transaction History Table */}
       <h2 className="font-display text-lg font-bold text-slate-900 mb-3">
@@ -1671,10 +2041,16 @@ function MessagesSection({ workers, onUnreadChange }) {
                 <button
                   key={c.conversation_id}
                   onClick={() => setActiveConv(c)}
-                  className={`w-full p-3 rounded-2xl text-left transition-all flex items-center justify-between gap-2 ${
+                  className={`w-full p-2.5 rounded-2xl text-left transition-all flex items-center gap-3 ${
                     isSelected ? "bg-teal-800 text-white shadow-sm" : "hover:bg-white text-slate-800"
                   }`}
                 >
+                  <WorkerAvatar
+                    name={c.worker.name}
+                    photoUrl={c.worker.profile_photo_url}
+                    size="sm"
+                    className="shrink-0 shadow-xs border border-stone-200"
+                  />
                   <div className="min-w-0 flex-1">
                     <p className="font-bold text-sm truncate">{c.worker.name}</p>
                     <p className={`text-xs truncate ${isSelected ? "text-teal-200" : "text-slate-500"}`}>
@@ -1692,13 +2068,21 @@ function MessagesSection({ workers, onUnreadChange }) {
           <div className="flex flex-col h-full min-h-0 bg-[#fcfbfa]">
             {/* Chat Header */}
             <div className="p-4 border-b border-stone-200 bg-white flex items-center justify-between">
-              <div>
-                <h2 className="font-display font-bold text-base text-slate-900">
-                  {activeConv.worker.name}
-                </h2>
-                <p className="text-xs text-slate-500">
-                  {activeConv.worker.work_type} · {activeConv.worker.mobile}
-                </p>
+              <div className="flex items-center gap-3">
+                <WorkerAvatar
+                  name={activeConv.worker.name}
+                  photoUrl={activeConv.worker.profile_photo_url}
+                  size="md"
+                  className="shadow-sm border border-stone-200"
+                />
+                <div>
+                  <h2 className="font-display font-bold text-base text-slate-900 leading-tight">
+                    {activeConv.worker.name}
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    {activeConv.worker.work_type} · {activeConv.worker.mobile || activeConv.worker.login_id || ""}
+                  </p>
+                </div>
               </div>
             </div>
 

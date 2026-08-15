@@ -6,6 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
+import WorkerAvatar from "@/components/ui/WorkerAvatar";
+import AttendanceCalendar from "@/components/attendance/AttendanceCalendar";
+import SalarySlipModal from "@/components/salary/SalarySlipModal";
 import AudioPlayer from "@/components/chat/AudioPlayer";
 import VoiceRecorder from "@/components/chat/VoiceRecorder";
 import SpeechTyping from "@/components/chat/SpeechTyping";
@@ -28,6 +31,8 @@ import {
   Eye,
   EyeOff,
   X,
+  FileText,
+  Download,
 } from "lucide-react";
 
 const statusStyle = {
@@ -53,6 +58,7 @@ export default function WorkerDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tab, setTab] = useState(() => new URLSearchParams(window.location.search).has("conversation") ? "messages" : "home"); // home, attendance, money, messages
+  const [salarySlipOpen, setSalarySlipOpen] = useState(false);
 
   // Chat State
   const [chatConv, setChatConv] = useState(null);
@@ -180,22 +186,25 @@ export default function WorkerDashboard() {
     <div className="min-h-screen bg-[#f8f7f2] flex flex-col">
       {/* Top Navbar */}
       <nav className="bg-[#102f2c] text-white sticky top-0 z-20 shadow-md">
-        <div className="max-w-5xl mx-auto px-4 py-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-bold shadow-md">
-              <HardHat className="h-5 w-5" />
-            </div>
-            <div>
-              <span className="font-display font-bold text-lg leading-tight block">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <WorkerAvatar
+              name={data?.worker ? data.worker.name : "Worker"}
+              photoUrl={data?.worker?.profile_photo_url || ""}
+              size="md"
+              className="border border-white/20 shadow-sm shrink-0"
+            />
+            <div className="min-w-0">
+              <span className="font-display font-bold text-base sm:text-lg leading-tight block truncate">
                 {data?.worker ? data.worker.name : "My Portal"}
               </span>
-              <span className="text-[11px] text-teal-300 font-semibold block">
+              <span className="text-[11px] text-teal-300 font-semibold block truncate">
                 {data?.business?.name || "WorkForce"}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <Button
               data-testid="worker-change-pwd-btn"
               variant="outline"
@@ -261,22 +270,45 @@ export default function WorkerDashboard() {
             {/* 1. HOME TAB */}
             {tab === "home" && (
               <div className="space-y-6">
-                {/* Greeting banner */}
-                <div className="bg-gradient-to-r from-teal-900 to-[#102f2c] text-white rounded-3xl p-6 shadow-md flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <span className="text-xs font-bold text-teal-300 uppercase tracking-widest block">
-                      नमस्ते / Welcome
-                    </span>
-                    <h1 className="font-display text-2xl sm:text-3xl font-extrabold mt-1">
-                      {data.worker.name} 👋
-                    </h1>
-                    <p className="text-teal-200 text-xs mt-1 font-medium">
-                      काम: <strong>{data.worker.work_type}</strong> · शामिल: {data.worker.joining_date}
-                    </p>
+                {/* Greeting / Profile Identity Header */}
+                <div className="bg-gradient-to-r from-teal-900 via-[#102f2c] to-[#0d2724] text-white rounded-3xl p-5 sm:p-6 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-4 min-w-0">
+                    <WorkerAvatar
+                      name={data.worker.name}
+                      photoUrl={data.worker.profile_photo_url}
+                      size="xl"
+                      className="shadow-md border-2 border-white/20 ring-2 ring-amber-400/30 shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] font-extrabold uppercase tracking-widest text-teal-300">
+                          नमस्ते / Welcome
+                        </span>
+                        <span className="bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                          {data.worker.status === "INACTIVE" ? "निष्क्रिय / Inactive" : "सक्रिय / Active"}
+                        </span>
+                      </div>
+                      <h1 className="font-display text-2xl sm:text-3xl font-extrabold mt-0.5 truncate">
+                        {data.worker.name}
+                      </h1>
+                      <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-teal-200">
+                        <span className="font-semibold text-white">{data.worker.work_type}</span>
+                        {data.worker.login_id && (
+                          <>
+                            <span>•</span>
+                            <span className="font-mono bg-white/10 px-2 py-0.5 rounded text-amber-300 font-bold text-[11px]">
+                              ID: {data.worker.login_id}
+                            </span>
+                          </>
+                        )}
+                        <span>•</span>
+                        <span>शामिल: {data.worker.joining_date}</span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="bg-white/10 px-4 py-2.5 rounded-2xl border border-white/10 text-right">
+                  <div className="bg-white/10 px-4 py-3 rounded-2xl border border-white/10 self-start sm:self-auto sm:text-right shrink-0">
                     <span className="text-[11px] text-teal-200 block">महीने का वेतन</span>
-                    <span className="font-display text-xl font-extrabold text-amber-300">
+                    <span className="font-display text-xl sm:text-2xl font-extrabold text-amber-300">
                       {money(data.summary.monthly_salary)}
                     </span>
                   </div>
@@ -356,34 +388,43 @@ export default function WorkerDashboard() {
 
             {/* 2. ATTENDANCE TAB */}
             {tab === "attendance" && (
-              <div className="bg-white border border-stone-200 rounded-3xl p-6 shadow-sm">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h2 className="font-display text-xl font-bold text-slate-900">
-                      हाज़िरी का हिसाब / Attendance History
-                    </h2>
-                    <p className="text-xs text-slate-500">आपके काम के दिनों का विवरण</p>
-                  </div>
-                  <Badge className="bg-teal-50 text-teal-900 border-teal-200 text-xs font-bold px-3 py-1 rounded-xl">
-                    ₹{data.summary.daily_rate} / दिन
-                  </Badge>
-                </div>
+              <div className="space-y-6">
+                {/* Monthly Interactive Calendar */}
+                <AttendanceCalendar
+                  worker={data?.worker}
+                  isAdmin={false}
+                />
 
-                <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1" data-testid="worker-attendance-list">
-                  {data.attendance.length === 0 && (
-                    <p className="text-sm text-slate-400 py-12 text-center">अभी कोई हाज़िरी दर्ज नहीं है।</p>
-                  )}
-                  {data.attendance.map((a) => (
-                    <div
-                      key={a.date}
-                      className="flex items-center justify-between p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:bg-stone-100/60 transition-colors"
-                    >
-                      <span className="font-mono text-sm font-semibold text-slate-800">{a.date}</span>
-                      <span className={`text-xs px-3 py-1 rounded-full border ${statusStyle[a.status]}`}>
-                        {statusHindi[a.status] || a.status}
-                      </span>
+                {/* Historical Log */}
+                <div className="bg-white border border-stone-200 rounded-3xl p-6 shadow-sm">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="font-display font-bold text-base text-slate-900">
+                        हाज़िरी लॉग / Recent Activity Log
+                      </h3>
+                      <p className="text-xs text-slate-500">सभी दर्ज की गई हाज़िरी की सूची</p>
                     </div>
-                  ))}
+                    <Badge className="bg-teal-50 text-teal-900 border-teal-200 text-xs font-bold px-3 py-1 rounded-xl">
+                      ₹{data.summary.daily_rate} / दिन
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-1" data-testid="worker-attendance-list">
+                    {data.attendance.length === 0 && (
+                      <p className="text-sm text-slate-400 py-8 text-center">अभी कोई हाज़िरी दर्ज नहीं है।</p>
+                    )}
+                    {data.attendance.map((a) => (
+                      <div
+                        key={a.date}
+                        className="flex items-center justify-between p-3 rounded-2xl bg-stone-50 border border-stone-100 hover:bg-stone-100/60 transition-colors"
+                      >
+                        <span className="font-mono text-sm font-semibold text-slate-800">{a.date}</span>
+                        <span className={`text-xs px-3 py-1 rounded-full border ${statusStyle[a.status]}`}>
+                          {statusHindi[a.status] || a.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
@@ -391,6 +432,31 @@ export default function WorkerDashboard() {
             {/* 3. MONEY TAB */}
             {tab === "money" && (
               <div className="space-y-6">
+                {/* Salary Slip Download Banner */}
+                <div className="bg-gradient-to-r from-teal-900 via-[#102f2c] to-[#0a201e] text-white rounded-3xl p-5 sm:p-6 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5">
+                    <div className="h-12 w-12 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-bold shadow-md shrink-0">
+                      <FileText className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-lg font-bold">
+                        वेतन पर्ची डाउनलोड करें / Salary Slip (PDF)
+                      </h3>
+                      <p className="text-xs text-teal-200 mt-0.5">
+                        किसी भी महीने का प्रमाणित वेतन विवरण व पर्ची PDF डाउनलोड करें
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    data-testid="worker-download-slip-btn"
+                    onClick={() => setSalarySlipOpen(true)}
+                    className="bg-amber-400 hover:bg-amber-500 text-slate-950 rounded-xl font-bold text-xs h-10 px-5 shadow-sm self-start sm:self-auto shrink-0"
+                  >
+                    <Download className="h-4 w-4 mr-1.5" /> वेतन पर्ची (PDF)
+                  </Button>
+                </div>
+
                 {/* Financial Overview Card */}
                 <div className="bg-white border border-stone-200 rounded-3xl p-6 shadow-sm">
                   <h2 className="font-display text-xl font-bold text-slate-900 mb-4">
@@ -707,6 +773,15 @@ export default function WorkerDashboard() {
           </div>
         </div>
       )}
+
+      {/* Worker Salary Slip Modal */}
+      <SalarySlipModal
+        open={salarySlipOpen}
+        onClose={() => setSalarySlipOpen(false)}
+        worker={data?.worker}
+        isAdmin={false}
+      />
     </div>
   );
 }
+
