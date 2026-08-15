@@ -751,7 +751,12 @@ async def admin_reset_password(body: ResetPasswordRequest, request: Request):
 @api_router.get("/admin/me")
 async def admin_me(request: Request, response: Response, admin: dict = Depends(get_current_admin)):
     # Renew the secure cookie only after a valid authenticated request.
-    csrf_token = set_session_cookie(response, "access_token", create_access_token(admin["id"], admin["email"], admin["business_id"]))
+    csrf_token = set_session_cookie(
+        response,
+        "access_token",
+        create_access_token(admin["id"], admin["email"], admin["business_id"]),
+        request.cookies.get("csrf_token"),
+    )
     return {**admin, "csrf_token": csrf_token}
 
 

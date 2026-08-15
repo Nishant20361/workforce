@@ -2,7 +2,7 @@ import { isOwnMessage, isSameMessageSender, normalizeSenderType } from "./chatMe
 
 describe("chat message ownership", () => {
   const admin = { type: "owner", id: "admin-1" };
-  const worker = { type: "worker", user_id: "worker-1", worker_id: "worker-1" };
+  const worker = { type: "worker", id: "worker-1" };
 
   test("normalizes current and historical role aliases", () => {
     expect(normalizeSenderType("ADMIN")).toBe("owner");
@@ -18,8 +18,7 @@ describe("chat message ownership", () => {
 
   test("safely handles legacy messages without sender_id", () => {
     expect(isOwnMessage({ sender_type: "ADMIN" }, admin)).toBe(true);
-    expect(isOwnMessage({ sender_type: "WORKER", worker_id: "worker-1" }, worker)).toBe(true);
-    expect(isOwnMessage({ sender_type: "WORKER", worker_id: "other-worker" }, worker)).toBe(false);
+    expect(isOwnMessage({ sender_type: "WORKER" }, worker)).toBe(true);
     expect(isOwnMessage({ sender_type: "unknown" }, admin)).toBe(false);
   });
 

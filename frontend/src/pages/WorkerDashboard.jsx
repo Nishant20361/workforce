@@ -587,7 +587,7 @@ export default function WorkerDashboard() {
                         <MessageBubble
                           message={m}
                           previousMessage={messages[index - 1]}
-                          currentActor={{ ...user, type: "worker" }}
+                          currentActor={{ type: "worker", id: user?.worker_id }}
                           receivedLabel="मालिक (Owner)"
                         />
                       </div>

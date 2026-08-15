@@ -10,11 +10,18 @@ from backend.server import app, db
 
 
 async def cleanup_test_data(prefix: str):
+    businesses = await db.businesses.find({"name": {"$regex": f"^{prefix}"}}, {"_id": 0, "id": 1}).to_list(20)
+    business_ids = [business["id"] for business in businesses]
+    admins = await db.admins.find({"username": {"$regex": f"^{prefix}"}}, {"_id": 0, "id": 1}).to_list(20)
+    admin_ids = [admin["id"] for admin in admins]
     await db.admins.delete_many({"username": {"$regex": f"^{prefix}"}})
     await db.businesses.delete_many({"name": {"$regex": f"^{prefix}"}})
     await db.workers.delete_many({"name": {"$regex": f"^{prefix}"}})
-    await db.worker_sessions.delete_many({})
-    await db.password_reset_tokens.delete_many({})
+    await db.work_types.delete_many({"business_id": {"$in": business_ids}})
+    await db.conversations.delete_many({"business_id": {"$in": business_ids}})
+    await db.messages.delete_many({"business_id": {"$in": business_ids}})
+    await db.worker_sessions.delete_many({"business_id": {"$in": business_ids}})
+    await db.password_reset_tokens.delete_many({"admin_id": {"$in": admin_ids}})
 
 
 @pytest.mark.asyncio
@@ -98,6 +105,120 @@ async def test_admin_signup_and_login_both_ways():
         })
         assert bad_id_res.status_code == 401
         assert bad_id_res.json()["detail"] == "Invalid username/email or password"
+
+    await cleanup_test_data(prefix)
+
+
+@pytest.mark.asyncio
+async def test_csrf_survives_admin_and_worker_bootstrap_for_work_types_and_chat():
+    tag = uuid.uuid4().hex[:6]
+    prefix = f"test_csrf_{tag}"
+    transport = ASGITransport(app=app)
+    worker_id = None
+    conversation_id = None
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin_client:
+        signup = await admin_client.post("/api/admin/signup", json={
+            "name": f"{prefix}_Owner",
+            "business_name": f"{prefix}_Biz",
+            "username": f"{prefix}_admin",
+            "email": f"{prefix}@example.com",
+            "password": "AdminPass123!",
+        })
+        assert signup.status_code == 200
+        initial_csrf = signup.cookies.get("csrf_token")
+        admin_client.headers["X-CSRF-Token"] = initial_csrf
+
+        for _ in range(3):
+            me = await admin_client.get("/api/admin/me")
+            assert me.status_code == 200
+            assert me.json()["csrf_token"] == initial_csrf
+            assert admin_client.cookies.get("csrf_token") == initial_csrf
+
+        for role in ("Salesman", "Barber"):
+            created_role = await admin_client.post("/api/work-types", json={"name": role})
+            assert created_role.status_code == 200
+            assert created_role.json()["name"] == role
+
+        worker = await admin_client.post("/api/workers", json={
+            "name": f"{prefix}_Worker",
+            "mobile": f"97{secrets.randbelow(100000000):08d}",
+            "work_type": "Salesman",
+            "joining_date": "2026-08-01",
+            "salary": 15000,
+            "status": "ACTIVE",
+            "portal_enabled": True,
+            "login_id": f"WF-CSRF{tag.upper()}",
+            "password": "WorkerPass123!",
+        })
+        assert worker.status_code == 200
+        worker_id = worker.json()["id"]
+
+        admin_message = await admin_client.post("/api/chat/messages", json={
+            "worker_id": worker_id,
+            "message_type": "text",
+            "text": "Admin CSRF message",
+        })
+        assert admin_message.status_code == 200
+        assert admin_message.json()["sender_type"] == "owner"
+        assert admin_message.json()["sender_id"] == signup.json()["admin"]["id"]
+        conversation_id = admin_message.json()["conversation_id"]
+
+        original_header = admin_client.headers.pop("X-CSRF-Token")
+        missing = await admin_client.post("/api/work-types", json={"name": "Must Not Be Added"})
+        assert missing.status_code == 403
+        admin_client.headers["X-CSRF-Token"] = "invalid-token"
+        invalid = await admin_client.post("/api/work-types", json={"name": "Must Not Be Added Either"})
+        assert invalid.status_code == 403
+        admin_client.headers["X-CSRF-Token"] = original_header
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as worker_client:
+        login = await worker_client.post("/api/worker/login", json={
+            "login_id": f"WF-CSRF{tag.upper()}",
+            "password": "WorkerPass123!",
+        })
+        assert login.status_code == 200
+        worker_csrf = login.cookies.get("csrf_token")
+        worker_client.headers["X-CSRF-Token"] = worker_csrf
+
+        me = await worker_client.get("/api/worker/me")
+        assert me.status_code == 200
+        assert me.json()["csrf_token"] == worker_csrf
+
+        reply = await worker_client.post("/api/chat/messages", json={
+            "conversation_id": conversation_id,
+            "worker_id": worker_id,
+            "message_type": "text",
+            "text": "Worker CSRF reply",
+        })
+        assert reply.status_code == 200
+        assert reply.json()["sender_type"] == "worker"
+        assert reply.json()["sender_id"] == worker_id
+
+        worker_client.headers["X-CSRF-Token"] = "invalid-token"
+        rejected = await worker_client.post("/api/chat/messages", json={
+            "conversation_id": conversation_id,
+            "worker_id": worker_id,
+            "message_type": "text",
+            "text": "Must not be saved",
+        })
+        assert rejected.status_code == 403
+        worker_client.headers["X-CSRF-Token"] = worker_csrf
+
+        password = await worker_client.post("/api/worker/change-password", json={
+            "current_password": "WorkerPass123!",
+            "new_password": "NewWorkerPass456!",
+        })
+        assert password.status_code == 200
+
+    messages = await db.messages.find(
+        {"conversation_id": conversation_id},
+        {"_id": 0, "sender_type": 1, "sender_id": 1, "worker_id": 1, "text": 1},
+    ).sort("created_at", 1).to_list(10)
+    assert messages == [
+        {"worker_id": worker_id, "sender_type": "owner", "sender_id": signup.json()["admin"]["id"], "text": "Admin CSRF message"},
+        {"worker_id": worker_id, "sender_type": "worker", "sender_id": worker_id, "text": "Worker CSRF reply"},
+    ]
 
     await cleanup_test_data(prefix)
 

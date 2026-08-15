@@ -8,12 +8,6 @@ export function normalizeSenderType(value) {
   return null;
 }
 
-const actorIds = (actor) => new Set(
-  [actor?.id, actor?.user_id, actor?.worker_id]
-    .filter((value) => value !== undefined && value !== null && String(value).trim())
-    .map(String),
-);
-
 /** Returns true only when the message can be attributed to the current actor. */
 export function isOwnMessage(message, currentActor) {
   const messageType = normalizeSenderType(message?.sender_type);
@@ -22,15 +16,13 @@ export function isOwnMessage(message, currentActor) {
 
   const senderId = message?.sender_id;
   if (senderId !== undefined && senderId !== null && String(senderId).trim()) {
-    return actorIds(currentActor).has(String(senderId));
+    return currentActor?.id !== undefined
+      && currentActor?.id !== null
+      && String(currentActor.id) === String(senderId);
   }
 
-  // Legacy messages without sender_id are safe because a conversation has one
-  // owner side and one worker side. Unknown sender types never reach this path.
-  if (messageType === "worker" && message?.worker_id) {
-    return actorIds(currentActor).has(String(message.worker_id));
-  }
-  return messageType === "owner";
+  // sender_type is only a safe fallback for legacy records that have no ID.
+  return messageType === actorType;
 }
 
 export function isSameMessageSender(message, previousMessage) {
