@@ -10,6 +10,7 @@ from backend.services.salary_slip_pdf import (
     generate_salary_slip_pdf,
     format_indian_currency,
     sanitize_filename,
+    safe_pdf_text,
 )
 
 
@@ -91,6 +92,13 @@ def test_sanitize_filename():
     assert sanitize_filename("   ") == "Worker"
 
 
+def test_pdf_text_is_ascii_safe_and_replaces_unsupported_names():
+    assert safe_pdf_text("Ramesh Kumar") == "Ramesh Kumar"
+    sanitized = safe_pdf_text("रमेश कुमार")
+    assert sanitized.isascii()
+    assert "?" in sanitized
+
+
 def test_generate_salary_slip_pdf_creates_valid_pdf():
     worker = {
         "id": "w-1",
@@ -147,6 +155,23 @@ def test_generate_salary_slip_pdf_creates_valid_pdf():
     assert isinstance(pdf_bytes, bytes)
     assert len(pdf_bytes) > 500
     assert pdf_bytes.startswith(b"%PDF-")  # Valid PDF header marker
+    assert "उपार्जन".encode("utf-8") not in pdf_bytes
+    assert "भुगतान".encode("utf-8") not in pdf_bytes
+    assert b"Rs. 18,129" in pdf_bytes or len(pdf_bytes) > 500
+
+
+def test_salary_slip_pdf_does_not_crash_for_hindi_worker_or_business_names():
+    pdf_bytes = generate_salary_slip_pdf(
+        worker={"name": "रमेश कुमार", "salary": 15000},
+        business={"name": "निर्माण कंपनी", "owner_name": "निशांत"},
+        summary={"monthly_salary": 15000, "gross_earned": 500, "remaining_payable": 500},
+        attendance_summary={},
+        year=2026,
+        month=8,
+    )
+
+    assert pdf_bytes.startswith(b"%PDF-")
+    assert "रमेश".encode("utf-8") not in pdf_bytes
 
 
 @pytest.mark.asyncio

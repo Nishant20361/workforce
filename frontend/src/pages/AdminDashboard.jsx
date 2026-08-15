@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { adminApi, apiError, money } from "@/lib/api";
@@ -26,7 +26,7 @@ import {
   Plus, Pencil, Trash2, Loader2, Menu, X, Search, UserPlus,
   MessageSquare, Eye, Send, Mic, Building2, CheckCircle2, ChevronRight,
   KeyRound, RefreshCw, Copy, Power, BarChart3, CircleDollarSign, ClipboardList,
-  Camera, Upload, Image as ImageIcon
+  Camera, Upload, Image as ImageIcon, FileText
 } from "lucide-react";
 
 const WORK_TYPES = ["Driver", "Helper", "Labour", "Technician", "Supervisor", "Electrician", "Plumber", "Other"];
@@ -1401,7 +1401,8 @@ function AttendanceSection({ workers }) {
 }
 
 /* ---------------- 4. Payments & Advances Section ---------------- */
-function PaymentsSection({ workers }) {
+export function PaymentsSection({ workers = [] }) {
+  const safeWorkers = useMemo(() => (Array.isArray(workers) ? workers.filter(Boolean) : []), [workers]);
   const [payments, setPayments] = useState([]);
   const [summaries, setSummaries] = useState({});
   const [form, setForm] = useState({
@@ -1418,11 +1419,11 @@ function PaymentsSection({ workers }) {
   const load = useCallback(async () => {
     try {
       const p = await adminApi.get("/payments");
-      setPayments(p.data);
+      setPayments(Array.isArray(p?.data) ? p.data : []);
 
       const s = {};
       await Promise.all(
-        workers.map(async (w) => {
+        safeWorkers.map(async (w) => {
           try {
             s[w.id] = (await adminApi.get(`/workers/${w.id}/summary`)).data;
           } catch {}
@@ -1432,7 +1433,7 @@ function PaymentsSection({ workers }) {
     } catch (e) {
       toast.error(apiError(e));
     }
-  }, [workers]);
+  }, [safeWorkers]);
 
   useEffect(() => {
     load();
@@ -1479,7 +1480,7 @@ function PaymentsSection({ workers }) {
     }
   };
 
-  const wname = (id) => workers.find((w) => w.id === id)?.name || "—";
+  const wname = (id) => safeWorkers.find((w) => w.id === id)?.name || "—";
 
   return (
     <div>
@@ -1489,6 +1490,14 @@ function PaymentsSection({ workers }) {
       <p className="text-slate-500 text-sm mb-6">
         Record salary payouts, advances, and extra-work settlements with clear transaction history.
       </p>
+
+      {safeWorkers.length === 0 ? (
+        <div data-testid="payments-empty-workers" className="bg-white border border-stone-200 rounded-3xl p-8 text-center shadow-sm">
+          <HardHat className="h-8 w-8 mx-auto text-amber-500 mb-3" />
+          <p className="font-semibold text-slate-900">No workers added yet.</p>
+          <p className="text-sm text-slate-500 mt-1">Add a worker before recording a payment or generating a salary slip.</p>
+        </div>
+      ) : <>
 
       {/* Record Payment / Advance Form with FIXED non-overlapping select */}
       <div className="bg-white border border-stone-200 rounded-3xl p-6 sm:p-7 shadow-sm mb-8">
@@ -1508,7 +1517,7 @@ function PaymentsSection({ workers }) {
                 <SelectValue placeholder="Select worker / कर्मचारी चुनें" />
               </SelectTrigger>
               <SelectContent>
-                {workers.map((w) => (
+                {safeWorkers.map((w) => (
                   <SelectItem key={w.id} value={w.id}>
                     {w.name} ({w.work_type})
                   </SelectItem>
@@ -1591,8 +1600,8 @@ function PaymentsSection({ workers }) {
         इस महीने का हिसाब / Monthly Status by Worker
       </h2>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-        {workers.map((w) => {
-          const s = summaries[w.id];
+        {safeWorkers.map((w) => {
+          const s = summaries?.[w.id] || null;
           return (
             <div
               key={w.id}
@@ -1646,7 +1655,7 @@ function PaymentsSection({ workers }) {
                 <Button
                   type="button"
                   data-testid={`worker-slip-btn-${w.id}`}
-                  onClick={() => setSlipTarget(w)}
+                  onClick={() => w?.id && setSlipTarget(w)}
                   variant="outline"
                   size="sm"
                   className="rounded-xl text-xs font-bold text-teal-900 bg-teal-50 hover:bg-teal-100/80 border-teal-200 h-8"
@@ -1744,6 +1753,7 @@ function PaymentsSection({ workers }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      </>}
     </div>
   );
 }

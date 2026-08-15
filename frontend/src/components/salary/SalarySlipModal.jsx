@@ -45,10 +45,12 @@ export default function SalarySlipModal({
   const yearOptions = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1];
 
   const handleDownload = async () => {
+    const targetWorkerId = workerId || worker?.id;
+    if (!targetWorkerId) return;
     setDownloading(true);
     try {
       await downloadSalarySlipPdf({
-        workerId: workerId || worker?.id,
+        workerId: targetWorkerId,
         workerName: worker?.name || workerName,
         year: selectedYear,
         month: selectedMonth,
@@ -60,7 +62,8 @@ export default function SalarySlipModal({
     }
   };
 
-  if (!open) return null;
+  // A stale modal state must never mount a dialog that cannot generate a slip.
+  if (!open || !(workerId || worker?.id)) return null;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose && onClose()}>
@@ -164,7 +167,7 @@ export default function SalarySlipModal({
             type="button"
             variant="outline"
             onClick={onClose}
-            disabled={downloading}
+            disabled={downloading || !(workerId || worker?.id)}
             className="w-full sm:w-auto rounded-xl text-xs"
           >
             रद्द करें / Cancel

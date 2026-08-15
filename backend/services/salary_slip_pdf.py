@@ -1,5 +1,6 @@
 import io
 import re
+from html import escape
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from reportlab.lib.pagesizes import A4
@@ -54,6 +55,14 @@ def sanitize_filename(name: str) -> str:
     """Sanitizes worker and business strings for safe Content-Disposition filenames."""
     clean = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip())
     return clean[:50] or "Worker"
+
+
+def safe_pdf_text(value: Any, fallback: str = "-") -> str:
+    """Return escaped ASCII text that ReportLab's built-in Helvetica can render."""
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    return escape(text.encode("ascii", "replace").decode("ascii"))
 
 
 def generate_salary_slip_pdf(
@@ -191,8 +200,8 @@ def generate_salary_slip_pdf(
     ]
     month_str = month_names[month - 1] if 1 <= month <= 12 else str(month)
 
-    biz_name = (business.get("name") if business else None) or "WorkForce Workspace"
-    biz_owner = (business.get("owner_name") if business else None) or ""
+    biz_name = safe_pdf_text((business.get("name") if business else None) or "WorkForce Workspace")
+    biz_owner = safe_pdf_text((business.get("owner_name") if business else None) or "", fallback="")
 
     header_left = [
         Paragraph("WORKFORCE", title_style),
@@ -226,19 +235,19 @@ def generate_salary_slip_pdf(
     worker_info_data = [
         [
             Paragraph("Worker Name:", cell_normal),
-            Paragraph(f"<b>{worker.get('name', '—')}</b>", cell_bold),
+            Paragraph(f"<b>{safe_pdf_text(worker.get('name'))}</b>", cell_bold),
             Paragraph("Worker ID:", cell_normal),
-            Paragraph(f"<b>{worker.get('login_id', '—')}</b>", cell_bold),
+            Paragraph(f"<b>{safe_pdf_text(worker.get('login_id'))}</b>", cell_bold),
         ],
         [
             Paragraph("Work Designation:", cell_normal),
-            Paragraph(str(worker.get("work_type", "—")), cell_bold),
+            Paragraph(safe_pdf_text(worker.get("work_type")), cell_bold),
             Paragraph("Mobile Phone:", cell_normal),
-            Paragraph(str(worker.get("mobile", "—")), cell_bold),
+            Paragraph(safe_pdf_text(worker.get("mobile")), cell_bold),
         ],
         [
             Paragraph("Joining Date:", cell_normal),
-            Paragraph(str(worker.get("joining_date", "—")), cell_bold),
+            Paragraph(safe_pdf_text(worker.get("joining_date")), cell_bold),
             Paragraph("Payroll Period:", cell_normal),
             Paragraph(f"{month_str} {year}", cell_bold),
         ],
@@ -331,33 +340,33 @@ def generate_salary_slip_pdf(
 
     financial_data = [
         [
-            Paragraph("<b>EARNINGS (उपार्जन)</b>", cell_bold),
+            Paragraph("<b>EARNINGS</b>", cell_bold),
             Paragraph("<b>AMOUNT</b>", cell_right_bold),
-            Paragraph("<b>PAYMENTS & ADVANCES (भुगतान)</b>", cell_bold),
+            Paragraph("<b>PAYMENTS & ADVANCES</b>", cell_bold),
             Paragraph("<b>AMOUNT</b>", cell_right_bold),
         ],
         [
-            Paragraph(f"Monthly Base Salary Rate (₹{daily_rate:.2f}/day)", cell_normal),
+            Paragraph(f"Monthly Base Salary Rate (Rs. {daily_rate:.2f}/day)", cell_normal),
             Paragraph(format_indian_currency(monthly_salary), cell_right),
-            Paragraph("Advances Taken (अग्रिम राशि)", cell_normal),
+            Paragraph("Advances Taken", cell_normal),
             Paragraph(format_indian_currency(advances_taken), cell_right),
         ],
         [
             Paragraph(f"Earned Salary ({att_units:.1f} units attendance)", cell_normal),
             Paragraph(format_indian_currency(earned_salary), cell_right),
-            Paragraph("Salary Payments Paid (वेतन भुगतान)", cell_normal),
+            Paragraph("Salary Payments Paid", cell_normal),
             Paragraph(format_indian_currency(salary_paid), cell_right),
         ],
         [
-            Paragraph("Extra Work Earnings (अतिरिक्त काम)", cell_normal),
+            Paragraph("Extra Work Earnings", cell_normal),
             Paragraph(format_indian_currency(extra_work_earned), cell_right),
             Paragraph("Extra Work Payments Paid", cell_normal),
             Paragraph(format_indian_currency(extra_work_paid), cell_right),
         ],
         [
-            Paragraph("<b>GROSS EARNINGS (कुल कमाई)</b>", cell_bold),
+            Paragraph("<b>GROSS EARNINGS</b>", cell_bold),
             Paragraph(f"<b>{format_indian_currency(gross_earned)}</b>", cell_right_bold),
-            Paragraph("<b>TOTAL PAID THIS MONTH (कुल मिला)</b>", cell_bold),
+            Paragraph("<b>TOTAL PAID THIS MONTH</b>", cell_bold),
             Paragraph(f"<b>{format_indian_currency(total_paid_month)}</b>", cell_right_bold),
         ],
     ]
@@ -387,7 +396,7 @@ def generate_salary_slip_pdf(
                 cell_bold,
             ),
             Paragraph(
-                f"<font size=11><b>REMAINING PAYABLE (बकाया राशि):</b></font> <font size=12 color='{PRIMARY.hexval()}'><b>{format_indian_currency(remaining_payable)}</b></font>",
+                f"<font size=11><b>REMAINING PAYABLE:</b></font> <font size=12 color='{PRIMARY.hexval()}'><b>{format_indian_currency(remaining_payable)}</b></font>",
                 cell_right_bold,
             ),
         ]
@@ -410,7 +419,7 @@ def generate_salary_slip_pdf(
 
     # 6. Payment Transaction Ledger for the Month (if any payments exist)
     if recent_payments and len(recent_payments) > 0:
-        story.append(Paragraph("PAYMENT TRANSACTION LOG (माह के लेन-देन)", section_heading))
+        story.append(Paragraph("PAYMENT TRANSACTION LOG", section_heading))
         story.append(Spacer(1, 4))
         
         log_rows = [
@@ -423,11 +432,11 @@ def generate_salary_slip_pdf(
         ]
         for p in recent_payments[:8]:
             ptype = p.get("type", "SALARY_PAYMENT")
-            type_label = "Advance (पेशगी)" if ptype == "ADVANCE" else ("Extra Work" if ptype == "EXTRA_WORK_PAYMENT" else "Salary (वेतन)")
+            type_label = "Advance" if ptype == "ADVANCE" else ("Extra Work" if ptype == "EXTRA_WORK_PAYMENT" else "Salary")
             log_rows.append([
-                Paragraph(str(p.get("date", "—")), cell_normal),
+                Paragraph(safe_pdf_text(p.get("date")), cell_normal),
                 Paragraph(type_label, cell_normal),
-                Paragraph(str(p.get("note", "") or "—"), cell_normal),
+                Paragraph(safe_pdf_text(p.get("note")), cell_normal),
                 Paragraph(format_indian_currency(p.get("amount", 0)), cell_right_bold),
             ])
 
