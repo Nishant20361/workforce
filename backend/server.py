@@ -897,6 +897,20 @@ def normalize_work_type(name: str) -> str:
     return " ".join((name or "").split()).casefold()
 
 
+def clean_work_type_document(document: dict | None) -> dict | None:
+    """Return the public Work Type shape without MongoDB's private ObjectId."""
+    if not document:
+        return None
+    return {
+        "id": document.get("id"),
+        "name": document.get("name"),
+        "normalized_name": document.get("normalized_name"),
+        "is_active": document.get("is_active", True),
+        "created_at": document.get("created_at"),
+        "updated_at": document.get("updated_at"),
+    }
+
+
 async def ensure_default_work_types(business_id: str) -> None:
     """Idempotently provide useful choices without touching worker records."""
     now = datetime.now(timezone.utc).isoformat()
@@ -926,7 +940,8 @@ async def list_work_types(include_inactive: bool = False, admin: dict = Depends(
     query = {"business_id": biz_id}
     if not include_inactive:
         query["is_active"] = True
-    return await db.work_types.find(query, {"_id": 0}).sort("name", 1).to_list(200)
+    documents = await db.work_types.find(query, {"_id": 0}).sort("name", 1).to_list(200)
+    return [clean_work_type_document(document) for document in documents]
 
 
 @api_router.post("/work-types")
@@ -943,7 +958,7 @@ async def create_work_type(body: WorkTypeCreate, admin: dict = Depends(get_curre
         await db.work_types.insert_one(doc)
     except DuplicateKeyError as exc:
         raise HTTPException(status_code=409, detail="This Work Type already exists.") from exc
-    return doc
+    return clean_work_type_document(doc)
 
 
 @api_router.put("/work-types/{work_type_id}")
@@ -962,7 +977,8 @@ async def update_work_type(work_type_id: str, body: WorkTypeUpdate, admin: dict 
     if body.is_active is not None:
         update["is_active"] = body.is_active
     await db.work_types.update_one({"id": work_type_id, "business_id": biz_id}, {"$set": update})
-    return await db.work_types.find_one({"id": work_type_id, "business_id": biz_id}, {"_id": 0})
+    document = await db.work_types.find_one({"id": work_type_id, "business_id": biz_id}, {"_id": 0})
+    return clean_work_type_document(document)
 
 
 @api_router.delete("/work-types/{work_type_id}")

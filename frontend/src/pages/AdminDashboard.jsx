@@ -468,7 +468,12 @@ function WorkersSection({ workers, reload, onOpenWorkerView }) {
       setNewWorkType("");
       toast.success("Work Type added");
     } catch (e) {
-      toast.error(apiError(e));
+      if (e?.response?.status === 409) {
+        await loadWorkTypes();
+        toast.error("This Work Type already exists.");
+      } else {
+        toast.error(apiError(e));
+      }
     } finally {
       setAddingWorkType(false);
     }
